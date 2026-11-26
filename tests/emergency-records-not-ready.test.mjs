@@ -1,7 +1,7 @@
 import { jest } from '@jest/globals';
 
 /**
- * A database that has not had the emergency records upgrade (schema 81).
+ * A database that has not had the emergency records upgrade.
  * lib/database.js finds this at boot and switches the step off. The four
  * routes then answer 503 and read nothing. The rule for calls out needs only
  * the phone system step, which has the state column.

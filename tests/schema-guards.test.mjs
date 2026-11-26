@@ -18,7 +18,7 @@ describe('guarded schema steps', () => {
       .toEqual([['registrarHA1', 72], ['phoneSystem', 73], ['brands', 74], ['phoneProvisioning', 76], ['outboundPolicy', 77], ['callRedaction', 78], ['extensionCharge', 79], ['phoneResync', 80], ['emergencyRecords', 81]]);
   });
 
-  test('a schema 80 database lacks only the emergency records step', () => {
+  test('a database one step behind lacks only the emergency records step', () => {
     const added = GUARDED_STEPS.emergencyRecords.columns.phone_numbers;
     const rows = upgradedRows().filter((row) => !(row.table_name === 'phone_numbers' && added.includes(row.column_name)));
     for (const step of Object.keys(GUARDED_STEPS).filter((name) => name !== 'emergencyRecords')) expect(missingParts(step, rows)).toEqual([]);
