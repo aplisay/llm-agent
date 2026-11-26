@@ -793,6 +793,11 @@ describe('phone system directory API', () => {
       // An emergency call is still answered.
       const sos = await resolve({ kind: 'dialled', fromEndpoint: await usernameOf(lineOn(made.priyaDesk, '101')), digits: '112' });
       expect(sos).toMatchObject({ action: 'emergency', emergency: { presentNumber: `+${ddi(2)}` } });
+      expect(await resolve({ kind: 'dialled', fromEndpoint: await usernameOf(lineOn(made.priyaDesk, '101')), digits: '200' })).toMatchObject({
+        action: 'refuse',
+        reason: 'phone_system_disabled',
+        from: { extensionNumber: '101', presentNumber: `+${ddi(2)}` },
+      });
       expect((await get('ownerA', '/phones')).body.code).toBe('phone_system_disabled');
       expect(await db.Line.count({ where: { organisationId: orgs.a } })).toBe(lines);
       expect((await ok(get('ownerA', '/directory/entries'))).entries.length).toBeGreaterThan(3);
@@ -806,7 +811,8 @@ describe('phone system directory API', () => {
       await ok(del('operator', `/organisations/${orgs.a}`));
       try {
         const refused = { action: 'refuse', reason: 'organisation_deactivated', organisationId: orgs.a };
-        expect(await resolve({ kind: 'dialled', fromEndpoint: fromSales, digits: '02079460999' })).toMatchObject(refused);
+        const refusedOut = await resolve({ kind: 'dialled', fromEndpoint: fromSales, digits: '02079460999' });
+        expect(refusedOut).toMatchObject(refused);
         expect(await resolve({ kind: 'dialled', fromEndpoint: fromRob, digits: '101' })).toMatchObject(refused);
         expect(await resolve(callIn)).toMatchObject(refused);
         expect(await resolve({ kind: 'extension', organisationId: orgs.a, extensionId: made.sales.extension.id })).toMatchObject(refused);
@@ -814,7 +820,11 @@ describe('phone system directory API', () => {
           expect(await resolve({ kind: 'dialled', fromEndpoint: fromSales, digits })).toMatchObject({ action: 'emergency', emergency: { number: digits } });
         }
         await ok(patch('operator', `/organisations/${orgs.a}`, { status: 'suspended' }));
-        expect(await resolve({ kind: 'dialled', fromEndpoint: fromSales, digits: '02079460999' })).toMatchObject({ action: 'outside' });
+        const allowedOut = await resolve({ kind: 'dialled', fromEndpoint: fromSales, digits: '02079460999' });
+        expect(allowedOut).toMatchObject({ action: 'outside' });
+        // The refusal named the line and the number it shows, as the plan does.
+        expect(refusedOut.from).toEqual(allowedOut.from);
+        expect(refusedOut.from.presentNumber).toBe(allowedOut.outside.presentNumber);
         expect((await resolve(callIn)).action).toBe('ring');
       } finally {
         await ok(patch('operator', `/organisations/${orgs.a}`, { status: 'active' }));
