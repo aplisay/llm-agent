@@ -1,10 +1,14 @@
-// No test may open a connection to a host outside this machine. A call that
-// has no stand-in (tests/setup/vendor-stand-ins.js) is refused here at once,
-// the same way on every machine, whatever keys the environment holds.
+// No test may open a TCP connection to a host outside this machine. A call
+// that has no stand-in (tests/setup/vendor-stand-ins.js) is refused here at
+// once, the same way on every machine, whatever keys the environment holds.
 //
 // jest loads this file for each test file (setupFiles). global-setup.js also
-// preloads it, through NODE_OPTIONS, into jest's workers and into the child
-// processes that tests start. CommonJS, because --require takes nothing else.
+// preloads it, through NODE_OPTIONS, into jest's workers and into node child
+// processes that inherit the environment. CommonJS, because --require takes
+// nothing else.
+//
+// Not stopped: UDP, a direct DNS lookup, a child process that is not node, and
+// a node child that is started with its own environment.
 //
 // Set TEST_NETWORK_LOG to a file path to get one JSON line for each refusal.
 const fs = require('node:fs');

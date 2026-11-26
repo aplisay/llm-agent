@@ -84,9 +84,10 @@ export default async (globalConfig, projectConfig) => {
   });
 
   // Made-up provider settings, and the guard against outside connections
-  // preloaded into every node process started from here on: jest's workers and
-  // the child processes tests start. Only when the config opts in: the Jambonz
-  // image suite shares this file and tests against a live Jambonz.
+  // preloaded into the node processes started from here on that inherit this
+  // environment: jest's workers and node children of tests. Only when the
+  // config opts in: the Jambonz image suite shares this file and tests against
+  // a live Jambonz.
   if (projectConfig?.globals?.noVendorCalls) {
     applyMadeUpSettings();
     const preload = `--require ${JSON.stringify(outsideNetworkGuard)}`;

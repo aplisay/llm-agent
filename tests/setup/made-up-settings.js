@@ -1,7 +1,8 @@
 // The provider settings every test runs with, on every machine. global-setup.js
-// applies them after it loads the environment, so a real key in a `.env` file
-// or a settings bundle never reaches a jest worker, and a machine with no keys
-// lists the same models and voices as one with all of them.
+// applies them after it loads the environment, so a real value for one of these
+// names never reaches a jest worker, and a machine with no keys lists the same
+// models and voices as one with all of them. A setting that is not named here
+// keeps the value the machine holds.
 //
 // None of these values works anywhere. `.invalid` names never resolve.
 // tests/setup/vendor-stand-ins.js answers the catalogue requests that the

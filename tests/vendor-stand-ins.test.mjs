@@ -1,5 +1,5 @@
 // The rules every test file runs under: made-up provider settings
-// (tests/setup/made-up-settings.js), no connection to another machine
+// (tests/setup/made-up-settings.js), no TCP connection to another machine
 // (tests/setup/no-outside-network.cjs), and fixed answers for the vendor
 // catalogue requests (tests/setup/vendor-stand-ins.js).
 import { spawnSync } from 'node:child_process';

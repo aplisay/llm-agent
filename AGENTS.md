@@ -102,9 +102,10 @@ Rules:
 - Importing `lib/database.js` connects to the database. Do not import it from
   code that must run without one.
 - Use `lib/logger.js`, not `console.log`, in server code.
-- A test must not call a vendor or need a provider key. The suite refuses
-  connections to other machines. See "No vendor calls, no provider keys" in
-  [docs/ci-testing.md](docs/ci-testing.md).
+- A test must not call a vendor or need a provider key. The suite refuses TCP
+  connections that node opens to other machines. It does not stop UDP, DNS
+  lookups or child processes that are not node. See "No vendor calls, no
+  provider keys" in [docs/ci-testing.md](docs/ci-testing.md).
 - Do not gofmt `agents/pipecat/sipbridge` wholesale. Keep diffs to the lines
   you change.
 - British spelling in docs and user-facing text.
