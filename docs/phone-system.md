@@ -175,6 +175,8 @@ A phone never rings for a call it places. When a line dials an extension that it
 
 When an organisation is deactivated (`DELETE /organisations/{id}`, or `status` set to `deactivated`), its phones take no calls. `resolve` refuses with `organisation_deactivated` every call the phone system would carry for it: calls out, calls between extensions, calls in to the numbers of its extensions, and the follow-ups about a call in progress. 999 and 112 still go out. A call to a number an agent listens on is not a phone system call, and is answered as before. `rings-now` shows that calls are not put through.
 
+A call from one of its registrations to an agent (`registration`) is refused too, with `organisation_deactivated` and no `organisationId`.
+
 Only `deactivated` does this. A `suspended` or `provisional` organisation's phones work as before.
 
 The lines stay registered and the phones still fetch their settings, so an emergency call can still be made. Call control answers a refused call with SIP 480, as it does for `charge_unpaid`. It records the call, at no charge.

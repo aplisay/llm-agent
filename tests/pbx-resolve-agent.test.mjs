@@ -226,6 +226,21 @@ describe('the resolve route names the agent of a call', () => {
       expect(await fromRegistration(registrations.idle, ddi(1))).toMatchObject({ action: 'refuse', reason: 'registration_not_routed' });
     });
 
+    test('a registration of a deactivated organisation is refused', async () => {
+      await Organisation.update({ status: 'deactivated' }, { where: { id: orgs.plain } });
+      try {
+        expect(await fromRegistration(registrations.withAgent, '8092'))
+          .toMatchObject({ action: 'refuse', reason: 'organisation_deactivated', organisationId: null });
+        expect(await fromRegistration(registrations.trunk, `+${ddi(6)}`)).toMatchObject({ action: 'refuse', reason: 'organisation_deactivated' });
+        // A call to a number an agent listens on is not a call from a registration.
+        expect(await resolve({ kind: 'number', calledNumber: `+${ddi(1)}`, trunkId: TRUNK_A })).toMatchObject({ action: 'agent' });
+        await Organisation.update({ status: 'suspended' }, { where: { id: orgs.plain } });
+        expect(await fromRegistration(registrations.withAgent, '8092')).toMatchObject({ action: 'agent' });
+      } finally {
+        await Organisation.update({ status: 'active' }, { where: { id: orgs.plain } });
+      }
+    });
+
     test('the refusals', async () => {
       expect(await fromRegistration(registrations.idle, '8092'))
         .toMatchObject({ action: 'refuse', reason: 'registration_not_routed', organisationId: null });
