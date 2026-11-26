@@ -369,6 +369,25 @@ describe('emergency address records', () => {
       expect([...first.items, ...rest].map((row) => row.number)).toEqual(whole);
     });
 
+    test('a row that leaves the states asked for while the list is being read is left out', async () => {
+      const { listRecords } = await import('../lib/emergency-records.js');
+      // The list finds its rows, then reads them. Between the two, the second row is accepted.
+      const rows = [
+        { id: 'a', number: '441', organisationId: 'o', emergencyRecordState: 'submitted' },
+        { id: 'b', number: '442', organisationId: 'o', emergencyRecordState: 'accepted' },
+      ];
+      const models = {
+        PhoneNumber: {
+          sequelize: { QueryTypes: { SELECT: 'SELECT' }, query: async () => rows.map(({ id, number }) => ({ id, number })) },
+          findAll: async () => rows,
+        },
+        Organisation: { findAll: async () => [{ id: 'o', address: ORG_ADDRESS }] },
+      };
+      const page = await listRecords({ states: ['submitted'] }, models);
+      expect(page.items.map((item) => [item.number, item.state])).toEqual([['441', 'submitted']]);
+      expect(page.next).toBeNull();
+    });
+
     test('a number on two of the carrier\'s trunks is one record: the row made first', async () => {
       const number = await newNumber();
       const later = await PhoneNumber.create({ number, handler: 'livekit', organisationId: orgs.second, aplisayId: CARRIER_2 });
