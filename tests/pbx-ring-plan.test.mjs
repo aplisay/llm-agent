@@ -869,3 +869,31 @@ describe('an unpaid monthly charge', () => {
     expect(plan(empty, toExtension('x-100')).action).not.toBe('refuse');
   });
 });
+
+describe('a deactivated organisation', () => {
+  const ROB_LINE = 'ln-p-rob-desk-1';
+  const withStatus = (status) => {
+    const s = baseSnapshot();
+    s.organisation.status = status;
+    return s;
+  };
+  const out = { kind: 'dialled', lineId: ROB_LINE, digits: '02079460999' };
+
+  test('its phones take no calls: out, between extensions, in, or to one line', () => {
+    const s = withStatus('deactivated');
+    const refused = { action: 'refuse', reason: 'organisation_deactivated', organisationId: 'org-1' };
+    expect(plan(s, out)).toMatchObject(refused);
+    expect(plan(s, { kind: 'dialled', lineId: ROB_LINE, digits: '101' })).toMatchObject(refused);
+    expect(plan(s, toExtension('x-100'))).toMatchObject(refused);
+    expect(plan(s, { kind: 'line', lineNumber: 1, callerId: CALLER })).toMatchObject(refused);
+  });
+
+  test.each(['999', '112'])('%s still goes out', (digits) => {
+    expect(plan(withStatus('deactivated'), { kind: 'dialled', lineId: ROB_LINE, digits }).action).toBe('emergency');
+  });
+
+  test.each(['active', 'suspended', 'provisional', undefined])('the phones of an organisation with status %s take calls', (status) => {
+    expect(plan(withStatus(status), out).action).toBe('outside');
+    expect(plan(withStatus(status), toExtension('x-100')).action).toBe('ring');
+  });
+});
