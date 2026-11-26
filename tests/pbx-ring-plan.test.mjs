@@ -561,6 +561,7 @@ describe('dialled digits', () => {
       phoneId: 'p-rob-desk',
       extensionId: 'x-100',
       extensionNumber: '100',
+      presentNumber: '+442079460820',
     });
   });
 
