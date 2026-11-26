@@ -26,6 +26,10 @@ export default function (logger) {
 };
 
 
+// The fields of a listener's number that GET /phone-endpoints also gives.
+// Named here because an included row is not sent through its own toJSON.
+const LISTENER_NUMBER_FIELDS = ['number', 'handler', 'outbound', 'aplisayId', 'provisioned', 'callReceived', 'createdAt', 'instanceId'];
+
 function agentWhere(req, res) {
   const { agentId } = req.params;
   return { id: agentId, ...scopeWhereForUser(res.locals.user) };
@@ -54,6 +58,7 @@ const agentGet = async (req, res) => {
             {
               model: PhoneNumber,
               as: 'number',
+              attributes: LISTENER_NUMBER_FIELDS,
             },
           ]
         }
@@ -66,7 +71,7 @@ const agentGet = async (req, res) => {
     if (!isModelAllowed(agent.modelName, res.locals.user?._allowedModels)) {
       return res.status(403).send({ message: 'model_not_permitted', detail: `Model ${agent.modelName} is not permitted for your account.` });
     }
-    req.log.info({ ...agent.dataValues, keys: undefined }, 'Agent fetched');
+    req.log.info({ id: agent.id, listeners: agent.listeners.map((listener) => listener.id) }, 'Agent fetched');
     res.send({ ...agent.dataValues, keys: undefined });
   }
   catch (err) {
@@ -138,9 +143,23 @@ agentGet.apiDoc = {
                       example: "32555d87-948e-48f2-a53d-fc5f261daa79"
                     },
                     number: {
-                      description: "The telephone number allocated to the agent in E.164 format (if any)",
-                      type: "string",
-                      example: "+442080996945"
+                      description: "The telephone number allocated to the listener, if any",
+                      type: "object",
+                      nullable: true,
+                      properties: {
+                        number: {
+                          description: "The number in E.164 format, without the leading +",
+                          type: "string",
+                          example: "442080996945"
+                        },
+                        handler: { type: "string" },
+                        outbound: { type: "boolean" },
+                        aplisayId: { description: "The number's trunk", type: "string", nullable: true },
+                        provisioned: { type: "boolean" },
+                        callReceived: { type: "string", format: "date-time", nullable: true },
+                        createdAt: { type: "string", format: "date-time" },
+                        instanceId: { description: "The listener's ID", type: "string", format: "uuid" }
+                      }
                     }
                   }
                 }

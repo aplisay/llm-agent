@@ -85,6 +85,16 @@ tags:
       that and from each person's extensions, and are never set by hand. Needs the `phoneSystem`
       capability, and answers 503 `phone_system_not_ready` until the database has had the phone system
       upgrade.
+  - name: Emergency Records
+    description: |-
+      The state of each number's emergency address record: the address the carrier holds for the
+      number and gives to the emergency services. A separate service sends each record to the
+      carrier and reads its status. It reads and writes the state here with a key of the
+      `emergencyService` role. No other key opens these routes.
+
+      A number has a record here when its trunk belongs to the carrier and its organisation has
+      the phone system. Every route answers 503 `emergency_records_not_ready` until the database
+      has had the upgrade (`tools/agent-admin.js upgrade-db`).
 
 # All operations require a bearer token unless stated otherwise on the operation.
 security:
@@ -3990,4 +4000,78 @@ components:
         isAdmin: { type: boolean }
         isSuperAdmin: { type: boolean }
         assignableRoles: { type: array, items: { type: string } }
+    EmergencyRecord:
+      description: One number's emergency address record, as this platform holds it.
+      type: object
+      required: [number, organisationId, version, mode, state]
+      properties:
+        number: { type: string, description: "The number, in digits with its country code and no `+`." }
+        organisationId: { type: string }
+        version:
+          type: string
+          description: >-
+            An opaque value that changes when the record is written, when the number moves
+            organisation, and when the address in force changes. A claim or a write names the
+            version it read.
+        mode:
+          type: string
+          enum: [organisation, own, carrier]
+          description: "Whose address the record should hold: the organisation's, the number's own, or one kept at the carrier of the number's owner."
+        address:
+          type: object
+          nullable: true
+          additionalProperties: { type: string }
+          description: The address in force. Null when there is none.
+        sent:
+          type: object
+          nullable: true
+          additionalProperties: { type: string }
+          description: What the carrier last took. Null when nothing has been sent.
+        state:
+          type: string
+          enum: [not_entered, draft, invalid, submitted, accepted, rejected, carrier, mismatch]
+        stateSince: { type: string, format: date-time, nullable: true, description: "When the state last changed to its present value." }
+        code: { type: integer, nullable: true, description: "The carrier's last status code." }
+        reason: { type: string, nullable: true, description: "The carrier's reason for a rejection, or why a record does not match." }
+        submittedAt: { type: string, format: date-time, nullable: true }
+        checkedAt: { type: string, format: date-time, nullable: true, description: "When the status was last read from the carrier." }
+        error: { type: string, nullable: true, description: "Why the address in force is not at the carrier. Null when it is." }
+        errorAt: { type: string, format: date-time, nullable: true }
+    EmergencyRecordExpect:
+      description: The record a request is about, as the caller read it.
+      type: object
+      required: [organisationId, version]
+      properties:
+        organisationId: { type: string }
+        version: { type: string }
+    EmergencyRecordWrite:
+      description: A write of a record. Send only the fields to change.
+      type: object
+      required: [expect]
+      properties:
+        expect: { $ref: '#/components/schemas/EmergencyRecordExpect' }
+        state:
+          type: string
+          enum: [not_entered, draft, invalid, submitted, accepted, rejected, mismatch]
+        code: { type: integer, nullable: true }
+        reason: { type: string, nullable: true }
+        sent:
+          type: object
+          nullable: true
+          additionalProperties: { type: string }
+          description: Null clears it, and is taken only with code 1 or 9.
+        submittedAt: { type: string, format: date-time }
+        checkedAt: { type: string, format: date-time }
+        error: { type: string, nullable: true }
+        errorAt: { type: string, format: date-time, nullable: true }
+    EmergencyRecordError:
+      description: A refused emergency record request.
+      type: object
+      required: [error, code]
+      properties:
+        error: { type: string, description: A plain sentence saying what is wrong. }
+        code:
+          type: string
+          description: A stable code, for example `not_found`, `changed`, `claimed`, `organisation_changed` or `move_not_allowed`.
+        field: { type: string, description: "The field at fault, when there is one." }
 paths: {}

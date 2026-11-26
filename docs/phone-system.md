@@ -9,6 +9,7 @@ This page describes the part of the API that lets desk phones register to the pl
 - **Lines.** The keys of a desk phone, worked out by the platform. Each line has its own SIP account.
 - **Number routing.** A number can ring an extension in place of an agent.
 - **Internal routes for call control.** A separate service decides what each call does by asking this API. For a call that belongs to an agent, the answer names the agent.
+- **Emergency address records.** The state of the address the carrier holds for each number, kept for the service that sends it. See [emergency-records.md](emergency-records.md).
 
 Not here yet: the service that carries the calls, phone provisioning, hunt groups, queues, agents inside phone system calls, and charging.
 
@@ -30,6 +31,8 @@ The phone system needs the schema 72 and 73 database upgrades (`tools/agent-admi
 The organisation's outbound policy also needs the schema 77 upgrade and then a restart of the API server. Until both are done, the outside calls of an organisation with the phone system are refused on the platform's own trunks with `outbound_policy_not_ready`, its agents' calls as well as its phones'. The policy, its limits and the brand's ceiling are in [outbound call authorisation](outbound-call-authorisation.md#the-organisations-outbound-policy).
 
 Billing for the phone system needs the schema 79 upgrade and then a restart of the API server. Until both are done nothing is charged, phone system calls write no usage, and an empty balance stops nothing. Charging starts on the day the upgrade ran, and no earlier day is charged. Each platform trunk that phone system calls leave by must be flagged `chargeable`; `yarn doctor` lists those that are not. The rate card's `extension` line and the trunk flags go in before the upgrade: the order is in [billing](billing-calls-from-usage.md#the-phone-system).
+
+Emergency address records need the schema 81 upgrade and then a restart of the API server. Until both are done the `/emergency-records` routes answer 503 `emergency_records_not_ready`. See [emergency-records.md](emergency-records.md).
 
 `GET /me` returns `organisation.capabilities`, so a front end can decide which pages to show without another request.
 
@@ -162,13 +165,17 @@ These are under `/api/agent-db/pbx`. They take `x-callctl-token` only. The worke
 |---|---|
 | `ring` | Ring the legs of `ring.steps`, in order. A leg names a line of a phone (`lineId`, `lineNumber`, `key`, the SIP `endpoint`, and what to `display`) or an outside number. When the last step ends unanswered, do what `noAnswer` says |
 | `outside` | A call from a line to an outside number. `outside.presentNumber` is the number to show |
-| `emergency` | A 999 or 112 call. Always answered, whatever the organisation's switches |
+| `emergency` | A 999 or 112 call. Always answered, whatever the organisation's switches and whatever the state of the number's [emergency address record](emergency-records.md). `emergency.presentNumber` is the number to show and `emergency.addressState` is the state of its record |
 | `connection` | Send the digits to the organisation's own phone system |
 | `agent` | Hand the call to an agent. `agent` names it: `instanceId`, `agentId` and `runtime`. Today only for a call that goes straight to an agent (see below). An agent as an extension, or as a destination of one, is a later release |
 | `forward` | Later releases |
 | `refuse` | The call cannot be routed. `reason` says why, for example `number_not_routed`, `phone_system_disabled`, `charge_unpaid` (a monthly charge unpaid for 30 days; emergency calls still go out), or `organisation_deactivated` (see below) |
 
 The plan applies what the directory knows: members, phones, lines, do-not-ring rules, and that an outside number rings only for its own person's own extension. It does not know whether a phone is busy or connected. Call control filters the legs by that.
+
+Every plan for digits dialled on a line has a `from` block: the line, its phone, the extension it calls as, and `from.presentNumber`, the number that line shows on a call out. It is there for an internal call too, so call control can keep it for an emergency call it has to place with no plan. It is null when the line has no number to show.
+
+A call out that would show a number whose emergency address record was rejected is refused by the outbound authorisation with `emergency_record_rejected`, not by the plan. An emergency plan is never refused for it.
 
 A phone never rings for a call it places. When a line dials an extension that its own phone rings for, such as a team its user belongs to, the plan leaves that phone out and lists it in `skipped` with the reason `caller_phone`. The user's other phones still ring.
 

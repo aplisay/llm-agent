@@ -166,6 +166,12 @@ chargeable trunks of an organisation with the phone system is refused with
 policy route answers 503. Run the upgrade and the restart together with the
 deploy.
 
+## A number whose emergency address record was rejected
+
+One rule comes before both cases above. A caller may say which number a leg will show (`presentNumber`). If that number is one of the organisation's own and the state of its [emergency address record](emergency-records.md) is `rejected`, the leg is refused with `emergency_record_rejected`, on any trunk. Calls go again as soon as the record is sent again.
+
+Call control names the number on every outside leg of a phone system call. The workers do not, so an agent's calls are not covered. The rule is not applied to 999 or 112, so it is never the reason one is refused. Call control places those calls from the plan, without asking here. Asked about one all the same, the authorisation answers as it does without this rule: on a platform trunk it refuses the destination with `invalid_destination`.
+
 ## Narrowings
 
 Changes that remove destinations an agent could dial before. Each is in the
@@ -188,6 +194,7 @@ The decision returns `{ allowed, code, reason, chargeable, trunkId, destination 
 | `not_rateable` | We hold no rate/tariff that prices this destination for this organisation |
 | `invalid_destination` | Not a dialable number at all |
 | `internal_extension_not_reachable` | The digits are the number of one of the organisation's phone system extensions, which only a phone system call can ring ([phone-system.md](phone-system.md)). Not checked until the database has the phone system schema |
+| `emergency_record_rejected` | The leg would show a number whose emergency address record was rejected ([emergency-records.md](emergency-records.md)). Only for a caller that names the number shown, which call control does. Never given for 999 or 112 |
 | `destination_class` | The organisation's outbound policy does not allow the destination's class. `destinationClass` names it, or is null for a UK number in no class |
 | `outside_hours` | Outside the hours of the organisation's outbound policy |
 | `calls_in_progress_limit`, `calls_per_minute_limit`, `daily_spend_limit`, `monthly_spend_limit` | A limit of the organisation's outbound policy is reached. `limit`, `value` and `current` say which and by how much |

@@ -33,7 +33,9 @@ export default function (logger) {
           attributes: ['aplisayId'],
         })
         : null;
-      const decision = await authoriseOutboundDestination({ calledId, organisationId, aplisayId: shown?.aplisayId || null });
+      const decision = await authoriseOutboundDestination({
+        calledId, organisationId, aplisayId: shown?.aplisayId || null, presentNumber: presentNumber || null,
+      });
       if (decision.allowed && !decision.chargeable && decision.trunkId) {
         const trunk = await Trunk.findByPk(decision.trunkId, { attributes: ['id', 'flags'] });
         if (trunk && !isRegistrationTrunk(trunk)) {
@@ -65,7 +67,11 @@ export default function (logger) {
               calledId: { type: 'string', description: 'The destination number.' },
               fromEndpoint: { type: 'string', nullable: true, description: 'The SIP username of the line that is calling.' },
               organisationId: { type: 'string', nullable: true, description: 'For a leg with no line. Ignored when fromEndpoint is given.' },
-              presentNumber: { type: 'string', nullable: true, description: 'The number the leg will show.' },
+              presentNumber: {
+                type: 'string',
+                nullable: true,
+                description: 'The number the leg will show. A number whose emergency address record was rejected is refused with `emergency_record_rejected`.',
+              },
             },
           },
         },
