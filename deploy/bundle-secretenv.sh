@@ -30,6 +30,14 @@
 #   ./bundle-secretenv.sh --env=production --file=path/to/.env
 #   ./bundle-secretenv.sh --dry-run             # plan only, no writes
 #
+# --only=<names> bundles only the named variables of the file, for a service
+# that should not hold every secret. Comma-separated; a name ending in * takes
+# every variable with that prefix:
+#   ./bundle-secretenv.sh --env=staging --target=k8s --only='POSTGRES_*,CREDENTIALS_KEY' \
+#       --k8s-secret=<name> --k8s-namespace=<namespace>
+# It prints the names it bundled, never a value. It needs the repo's
+# node_modules (yarn install).
+#
 # Requirements:
 #   - gcloud (gcp target) / kubectl (k8s target), openssl (key), node (+ npx)
 #   - the encryption uses the repo's local `secretenv` (node_modules) when
@@ -51,6 +59,7 @@ ENV_FILE=""
 TARGET="gcp"
 ASSUME_YES=0
 DRY_RUN=0
+ONLY=""
 
 # k8s target details (defaults match deploy/k8s/beta).
 K8S_NAMESPACE="llm-agent"
@@ -76,6 +85,8 @@ while [ $# -gt 0 ]; do
         --k8s-deployment)   K8S_DEPLOYMENT="${2:-}"; shift 2 ;;
         --k8s-context=*)   K8S_CONTEXT="${1#*=}"; shift ;;
         --k8s-context)     K8S_CONTEXT="${2:-}"; shift 2 ;;
+        --only=*)  ONLY="${1#*=}"; shift ;;
+        --only)    ONLY="${2:-}"; shift 2 ;;
         --yes|-y)  ASSUME_YES=1; shift ;;
         --dry-run) DRY_RUN=1; shift ;;
         -h|--help)
@@ -197,6 +208,7 @@ else
     echo -e "  Target:       ${GREEN}Kubernetes${NC} (context ${GREEN}$K8S_CONTEXT${NC})"
     echo -e "  Secret:       ${GREEN}$K8S_SECRET_NAME${NC} in namespace ${GREEN}$K8S_NAMESPACE${NC}"
 fi
+[ -n "$ONLY" ] && echo -e "  Only:         ${GREEN}$ONLY${NC}"
 [ "$DRY_RUN" = 1 ] && echo -e "  Mode:         ${YELLOW}DRY RUN (no writes)${NC}"
 echo
 
@@ -216,6 +228,12 @@ export SECRETENV_KEY
 
 encrypt_bundle() {
     local file="$1"
+    if [ -n "$ONLY" ]; then
+        # Its stderr is kept: it lists the names it bundled, never a value.
+        [ -d "$REPO_ROOT/node_modules/Odotenv" ] || { echo -e "${RED}--only needs the repo's node_modules (run yarn install).${NC}" >&2; exit 3; }
+        node "$SCRIPT_DIR/secretenv-subset.cjs" "$file" "$ONLY"
+        return
+    fi
     # package.json installs secretenv under the name dotenv.
     if [ -f "$REPO_ROOT/node_modules/dotenv/bin/secretenv.js" ]; then
         node "$REPO_ROOT/node_modules/dotenv/bin/secretenv.js" -p "$file" -e 2>/dev/null
