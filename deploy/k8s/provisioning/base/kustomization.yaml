@@ -5,13 +5,11 @@
 # The service ends TLS itself and asks each phone for its certificate. So
 # whatever stands in front of it must pass TCP through untouched.
 #
-# The namespace is not a resource here. It must exist before the first apply
-# (deploy/bundle-secretenv.sh --target=k8s makes it), and `kubectl delete -k`
-# then leaves it, and the settings Secret in it, alone.
+# The base names no namespace: the target does. The namespace is not a
+# resource here either, so `kubectl delete -k` leaves it, and the Secrets in
+# it, alone.
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
-
-namespace: llm-agent
 
 resources:
   - deployment.yaml

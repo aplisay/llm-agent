@@ -1,8 +1,9 @@
 # The desk phone provisioning service. See docs/phone-provisioning.md.
 #
 # It needs three things that are not made here, and the pod waits for each:
-#   - Secret llm-agent-secretenv: the environment's settings bundle
-#     (POSTGRES_*, CREDENTIALS_KEY). deploy/bundle-secretenv.sh writes it.
+#   - Secret provisioning-secretenv: the service's own settings bundle
+#     (POSTGRES_*, CREDENTIALS_KEY and three more). ../publish-settings.sh
+#     writes it.
 #   - Secret provisioning-tls: the certificate of the public host name. The
 #     target's cert-manager Certificate makes it.
 #   - The database upgrade (tools/agent-admin.js upgrade-db). Without it the
@@ -11,7 +12,6 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: provisioning
-  namespace: llm-agent
   labels:
     app.kubernetes.io/name: provisioning
 spec:
@@ -54,7 +54,7 @@ spec:
             # bundle at start, and a value in the bundle replaces one of the
             # same name from the ConfigMap.
             - secretRef:
-                name: llm-agent-secretenv
+                name: provisioning-secretenv
           ports:
             - name: https
               containerPort: 4010

@@ -7,8 +7,9 @@ fetch their settings files from it. What the service does, and every
 
 | Path | What |
 |---|---|
-| `base/` | The Deployment, its Service, its NetworkPolicy, its settings and the Snom CA file. Not applied directly |
-| `do-staging/` | The staging target: host name, certificate, load balancer, image |
+| `base/` | The Deployment, its Service, its NetworkPolicy, its settings and the Snom CA file. Names no namespace. Not applied directly |
+| `do-staging/` | The staging target: namespace, host name, certificate, load balancer, image |
+| `publish-settings.sh` | Writes the service's own settings Secret |
 
 ## How a phone reaches it
 
@@ -32,28 +33,57 @@ address, because the phones are anywhere.
 
 | Thing | Where it comes from |
 |---|---|
-| The namespace `llm-agent` | `deploy/bundle-secretenv.sh --target=k8s` makes it. It is not in the kustomization, so `kubectl delete -k` leaves it |
-| Secret `llm-agent-secretenv` | `deploy/bundle-secretenv.sh --env=<env> --target=k8s`, from the same environment file as the API server's bundle |
+| The namespace | It must exist. It is not in the kustomization, so `kubectl delete -k` leaves it |
+| Secret `provisioning-secretenv` | `./deploy/k8s/provisioning/publish-settings.sh --env=<env>` (below) |
 | Secret `provisioning-tls` | The target's cert-manager `Certificate` |
-| The image pull Secret (`aplisay-ar-pull` on staging) | Made by hand in the namespace. The registry is private |
+| The image pull Secret `aplisay-ar-pull` | Made by hand in the namespace. The registry is private |
 | The database upgrade | `tools/agent-admin.js upgrade-db`. Without it the process exits at start |
 
 The pod does not start until each Secret exists.
 
-From the settings bundle the service uses `POSTGRES_*` (with `POSTGRES_CA`,
-`POSTGRES_CERT` and `POSTGRES_KEY` where the database wants a client
-certificate) and `CREDENTIALS_KEY`. Both must be the API server's values:
-the phone's admin password is made from `CREDENTIALS_KEY`.
+## The settings Secret
 
-The process decrypts the bundle at start, and **a value in the bundle
-replaces a value of the same name from the ConfigMap**. So:
+The service has a settings bundle of its own. It holds only the variables
+the service reads, so the pod that faces the phones does not hold the API
+server's provider keys and tokens.
 
-- `PROV_PUBLIC_URL` may be in both. The API server needs it too, so it is in
-  the environment file anyway. Keep the two the same.
-- Never put `PROV_TLS_*`, `PROV_CLIENT_CERT_HEADER`, `PROV_TRUSTED_PROXIES`,
-  `PROV_PORT` or `PROV_SNOM_CA_FILE` in the environment file. They would
-  replace what the manifests set.
-- The pod holds every secret in the bundle, not only the ones it uses.
+```bash
+./deploy/k8s/provisioning/publish-settings.sh --env=staging
+```
+
+- It reads `.env.<env>` at the root of the checkout it is run from, the same
+  file the API server's bundle is made from. So the two cannot drift apart,
+  and there is no second file of secrets. `--file=<path>` names another
+  file.
+- It writes the Secret `provisioning-secretenv` in the target's namespace,
+  on the cluster bound to that environment. It asks before it writes.
+  `--dry-run` writes nothing.
+- It prints the names it bundled and the names it did not find. It never
+  prints a value.
+- The pod reads the Secret at start. Roll it after a publish.
+
+What it takes from the file, and nothing else:
+
+| Variable | Why |
+|---|---|
+| `POSTGRES_*` | The database, with `POSTGRES_CA`, `POSTGRES_CERT` and `POSTGRES_KEY` where it wants a client certificate |
+| `CREDENTIALS_KEY` | The phone's admin password is made from it. It must be the API server's |
+| `PBX_REGISTRAR_DOMAIN`, `REGSERVER_REGISTRAR` | When a phone names a model other than the one typed, its lines are worked out again at the fetch, and a new line takes this name. Without it that fetch fails |
+| `PBX_RELEASE` | Which phone system features are on, as on the API server |
+
+The list is the `ONLY` line in `publish-settings.sh`. A setting the service
+comes to read later must be added there. `NODE_ENV` and `DB_FORCE_SYNC` are
+left out on purpose: the pod must never be told to change the schema.
+
+The process decrypts the bundle at start, and a value in the bundle
+replaces a value of the same name from the ConfigMap. The list holds no
+`PROV_*` name, so the manifests' own settings stand.
+
+`PROV_PUBLIC_URL` is set in the target. The API server needs the same value
+in its own settings: it puts it in each phone's settings address.
+
+The filter is `--only` of `deploy/bundle-secretenv.sh`, which any other
+service can use the same way.
 
 ## The image
 
@@ -67,7 +97,7 @@ pushes. A running pod keeps the build it started with. After a staging
 build, roll it:
 
 ```bash
-kubectl --context=<cluster> -n llm-agent rollout restart deployment/provisioning
+kubectl --context=<cluster> -n b2bua rollout restart deployment/provisioning
 ```
 
 ## The certificate
@@ -109,31 +139,37 @@ A phone whose factory certificate is under it is refused. Snom lists the
 models: among them the 710 and D710, D712, D715, D725, D745 and D765, unless
 the unit was given a SHA-256 certificate later.
 
-## Staging: before the first apply
+## Staging
 
-The staging name is `prov-staging.aplisay.net`. In this order:
+The staging name is `prov.sip-staging.aplisay.net`. It is inside the DNS
+zone `sip-staging.aplisay.net`, which the cluster's `letsencrypt-dns` issuer
+already serves. So the certificate needs no DNS or issuer work.
 
-1. **The DNS zone.** `aplisay.net` is not a zone cert-manager can write to,
-   so the name is a DigitalOcean zone of its own, as the staging registrar
-   name is. Add the domain `prov-staging.aplisay.net` in DigitalOcean. In
-   the `aplisay.net` zone, add an NS record set for `prov-staging` with
-   `ns1.digitalocean.com.`, `ns2.digitalocean.com.` and
-   `ns3.digitalocean.com.`. Check: `dig +short SOA prov-staging.aplisay.net`
-   names `ns1.digitalocean.com`.
-2. **The issuer.** The `letsencrypt-dns` ClusterIssuer has a DigitalOcean
-   solver that lists the zones it serves. Add `prov-staging.aplisay.net` to
-   that list. Its token already covers every domain of the account.
-3. **The pull Secret** in the namespace `llm-agent`.
-4. **The settings Secret:**
-   `./deploy/bundle-secretenv.sh --env=staging --target=k8s`.
-5. **The database** is at the schema the image expects (the API server of
+### A namespace that another repo owns
+
+The target deploys into the namespace `b2bua`, beside the SIP edge and call
+control. That namespace and everything else in it belong to the manifests
+of the aplisay-b2bua repo. These manifests live here and only add to it:
+
+- Every object here is named `provisioning`, or starts with it. No manifest
+  of aplisay-b2bua uses such a name.
+- The NetworkPolicy and the Service select the label
+  `app.kubernetes.io/name: provisioning`, which only this pod has. A pod
+  that no policy selects is not touched by it, so the other workloads stay
+  as they are.
+- The namespace already holds the pull Secret.
+- **Take care with `kubectl delete -k` on an aplisay-b2bua target.** Some of
+  them hold the Namespace itself. Deleting one of those removes the
+  namespace, and with it this service, its Secrets and its load balancer.
+
+### Before the first apply
+
+1. **The settings Secret:**
+   `./deploy/k8s/provisioning/publish-settings.sh --env=staging`.
+2. **The database** is at the schema the image expects (the API server of
    the same build already runs on it).
 
-If the target is applied before steps 1 and 2, cert-manager asks for the
-certificate, fails and tries again later, and the pod waits for the Secret.
-Nothing else is harmed: the certificate holds only this name.
-
-## Staging: apply
+### Apply
 
 ```bash
 kubectl --context=<cluster> diff -k deploy/k8s/provisioning/do-staging
@@ -147,24 +183,26 @@ The apply makes a DigitalOcean load balancer named `prov-staging`, which is
 charged for. Then:
 
 1. Read the balancer's address:
-   `kubectl -n llm-agent get svc provisioning` (EXTERNAL-IP).
-2. Add an A record at the top of the `prov-staging.aplisay.net` zone with
-   that address, TTL 300.
+   `kubectl -n b2bua get svc provisioning` (EXTERNAL-IP).
+2. In the zone `sip-staging.aplisay.net`, add an A record `prov` with that
+   address, TTL 300.
 3. Wait for the certificate:
-   `kubectl -n llm-agent get certificate provisioning-tls` shows Ready.
-4. Check from outside: `curl https://prov-staging.aplisay.net/health`
+   `kubectl -n b2bua get certificate provisioning-tls` shows Ready. It does
+   not wait for the A record.
+4. Check from outside: `curl https://prov.sip-staging.aplisay.net/health`
    prints `ok`. A request for any settings file with no certificate gets a
    404 with an empty body.
-5. Give the API server `PROV_PUBLIC_URL=https://prov-staging.aplisay.net`.
-   Until it has that, `POST /phones/{phoneId}/provision` answers 503 and no
-   phone is given an address.
+5. Give the API server
+   `PROV_PUBLIC_URL=https://prov.sip-staging.aplisay.net`. Until it has
+   that, `POST /phones/{phoneId}/provision` answers 503 and no phone is
+   given an address.
 
 The address stays the same for as long as the Service exists. Deleting the
 Service deletes the balancer, and a new one gets a new address: change the
 A record then. To stop the service and keep the balancer:
 
 ```bash
-kubectl --context=<cluster> -n llm-agent scale deployment/provisioning --replicas=0
+kubectl --context=<cluster> -n b2bua scale deployment/provisioning --replicas=0
 ```
 
 ## Behind a proxy instead

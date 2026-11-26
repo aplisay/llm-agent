@@ -1,6 +1,9 @@
 # Only the service's TLS port is reachable. It is open to every address,
 # because the service ends TLS itself and the phones are anywhere.
 #
+# The selector names this service's pods only. A pod it does not select is
+# not touched, so it is safe in a namespace shared with other workloads.
+#
 # Behind a proxy that passes the phone's certificate in a header
 # (PROV_CLIENT_CERT_HEADER), this rule must change so that only the proxy's
 # pods reach the port. ../README.md has the rule.
@@ -8,7 +11,6 @@ apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
   name: provisioning
-  namespace: llm-agent
   labels:
     app.kubernetes.io/name: provisioning
 spec:
