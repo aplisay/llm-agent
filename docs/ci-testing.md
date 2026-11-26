@@ -75,6 +75,32 @@ Two consequences worth knowing:
   from the last one. Starting from a clean volume is no longer needed to avoid
   phantom failures.
 
+## No vendor calls, no provider keys
+
+The suite needs no provider key and no network beyond the test database. It
+gives the same result on a machine with every key as on one with none.
+
+- `tests/setup/global-setup.js` replaces the provider, speech and runtime
+  settings with the made-up values in `tests/setup/made-up-settings.js`, after
+  it loads the environment. No jest worker holds a real provider key.
+- `tests/setup/no-outside-network.cjs` refuses any connection to another
+  machine, except the test database. It also runs in the child processes that
+  tests start. Set `TEST_NETWORK_LOG` to a file path to get one JSON line for
+  each refusal.
+- `tests/setup/vendor-stand-ins.js` answers the vendors' voice catalogue
+  requests from `tests/fixtures/vendor-catalogues.js`. The bodies are in each
+  vendor's own format, so the loaders in `lib/` run on them.
+
+When a test needs a vendor's answer:
+
+- For a voice in a catalogue, add it to `tests/fixtures/vendor-catalogues.js`.
+- For any other call, give the test its own answer: inject the client, or
+  replace `fetch` in the test file and pass other URLs on.
+  `tests/agent-model-entitlement.test.mjs` does this for one model call.
+
+`agents/jambonz/tests` is not part of this suite. It tests against a live
+Jambonz and runs in the Jambonz image build.
+
 ## Environment Variables
 
 The test runner container uses these environment variables:
