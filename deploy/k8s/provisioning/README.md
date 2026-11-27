@@ -44,8 +44,7 @@ The pod does not start until each Secret exists.
 ## The settings Secret
 
 The service has a settings bundle of its own. It holds only the variables
-the service reads, so the pod that faces the phones does not hold the API
-server's provider keys and tokens.
+the service reads.
 
 ```bash
 ./deploy/k8s/provisioning/publish-settings.sh --env=staging
@@ -73,7 +72,8 @@ What it takes from the file, and nothing else:
 
 The list is the `ONLY` line in `publish-settings.sh`. A setting the service
 comes to read later must be added there. `NODE_ENV` and `DB_FORCE_SYNC` are
-left out on purpose: the pod must never be told to change the schema.
+not in it: the manifests set the first, and the pod runs with the second
+unset.
 
 The process decrypts the bundle at start, and a value in the bundle
 replaces a value of the same name from the ConfigMap. The list holds no
@@ -82,8 +82,10 @@ replaces a value of the same name from the ConfigMap. The list holds no
 `PROV_PUBLIC_URL` is set in the target. The API server needs the same value
 in its own settings: it puts it in each phone's settings address.
 
-The filter is `--only` of `deploy/bundle-secretenv.sh`, which any other
-service can use the same way.
+The filter is `--only` of `deploy/bundle-secretenv.sh`. Another service can
+use it the same way, with the Kubernetes target and a Secret name of its
+own (`--k8s-secret`). `--only` does not write to the default Secret names,
+which hold the bundle of the whole file.
 
 ## The image
 
@@ -93,8 +95,9 @@ server runs. At start the service does the same start-up database work as
 the API server, so a newer build would do a newer build's work first.
 
 On staging that is `llm-agent-staging:staging`, which the staging build
-pushes. A running pod keeps the build it started with. After a staging
-build, roll it:
+pushes. The pull policy is `Always`, so the pod takes the newest build each
+time its container starts: at a roll, and at any restart. After a staging
+build, roll it, so it does not wait for its next restart:
 
 ```bash
 kubectl --context=<cluster> -n b2bua rollout restart deployment/provisioning
@@ -241,6 +244,6 @@ has the rules. The manifests would change like this:
   ```
 
 A proxy's pod addresses change, so `PROV_TRUSTED_PROXIES` would have to be a
-range that other pods share. Then the NetworkPolicy is the only thing that
-stops another pod from sending the header. Check that the cluster's network
-plugin enforces it, for pods on the host network too.
+range that other pods share. Then only the NetworkPolicy limits which pods
+reach the port. Check that the cluster's network plugin enforces it, for
+pods on the host network too.

@@ -2,8 +2,7 @@
 #
 # publish-settings.sh: write the provisioning service's own settings Secret.
 #
-# The service gets a bundle of its own, with only the variables it reads, so
-# the pod that faces the phones does not hold the API server's other secrets.
+# The service gets a bundle of its own, with only the variables it reads.
 # It is made from the same environment file as the API server's bundle
 # (.env.<env> at the repo root), so the two cannot drift apart.
 #
@@ -30,9 +29,8 @@ DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 #   PBX_REGISTRAR_DOMAIN  when a phone names another model, its lines are
 #   REGSERVER_REGISTRAR     worked out again and a new line takes this name
 #   PBX_RELEASE           which phone system features are on
-# Left out on purpose: NODE_ENV and DB_FORCE_SYNC (the manifests set the
-# first, and the pod must never be told to change the schema), PROV_* (the
-# manifests set them), and every provider key and token.
+# Not in the list: NODE_ENV and PROV_* (the manifests set them), DB_FORCE_SYNC
+# (the pod runs with it unset), and every other line of the file.
 ONLY='POSTGRES_*,CREDENTIALS_KEY,PBX_REGISTRAR_DOMAIN,REGSERVER_REGISTRAR,PBX_RELEASE'
 
 ENVIRONMENT=""

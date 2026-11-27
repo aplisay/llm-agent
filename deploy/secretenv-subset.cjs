@@ -5,17 +5,25 @@
  *
  *   SECRETENV_KEY=... node secretenv-subset.cjs <env file> <names>
  *
- * <names> is a comma-separated list. A name ending in * takes every variable
- * with that prefix. The bundle goes to stdout. Only names go to stderr, never
- * a value.
+ * <names> is a comma-separated list. A name ending in _* takes every variable
+ * with that prefix: at least two characters, then an underscore, as in
+ * POSTGRES_*. SECRETENV_KEY and SECRETENV_BUNDLE are never bundled. The bundle
+ * goes to stdout. Only names go to stderr, never a value.
  */
 const crypto = require('node:crypto');
 const fs = require('node:fs');
+
+// A whole name, or a family of names: two characters or more, an underscore, then *.
+const NAME_RE = /^[A-Za-z_][A-Za-z0-9_]*$/;
+const PREFIX_RE = /^[A-Za-z_][A-Za-z0-9_]+_\*$/;
+// The pair a bundle is delivered as. A bundle that held them would replace them at decrypt time.
+const NEVER = ['SECRETENV_KEY', 'SECRETENV_BUNDLE'];
 
 /** The variables of `parsed` that a pattern in `patterns` names. */
 function pick(parsed, patterns) {
   const picked = {};
   for (const [name, value] of Object.entries(parsed)) {
+    if (NEVER.includes(name)) continue;
     if (patterns.some((pattern) => (pattern.endsWith('*') ? name.startsWith(pattern.slice(0, -1)) : name === pattern))) {
       picked[name] = value;
     }
@@ -47,8 +55,10 @@ function main([file, names]) {
   if (!file || !names) fail('usage: SECRETENV_KEY=... secretenv-subset.cjs <env file> <names>');
   if (!secret) fail('SECRETENV_KEY is not set');
   const patterns = names.split(',').map((name) => name.trim()).filter(Boolean);
-  const bad = patterns.filter((pattern) => !/^[A-Za-z_][A-Za-z0-9_]*\*?$/.test(pattern));
-  if (bad.length) fail(`not a variable name or prefix: ${bad.join(', ')}`);
+  const bad = patterns.filter((pattern) => !NAME_RE.test(pattern) && !PREFIX_RE.test(pattern));
+  if (bad.length) fail(`not a variable name, or a prefix of two characters or more that ends in _* (as in POSTGRES_*): ${bad.join(', ')}`);
+  const own = patterns.filter((pattern) => NEVER.includes(pattern));
+  if (own.length) fail(`never bundled: ${own.join(', ')}`);
 
   // The real dotenv parser, so a quoted or many-line value reads as the server reads it.
   const parsed = require('Odotenv').parse(fs.readFileSync(file));
