@@ -243,7 +243,7 @@ A phone system call is one `calls` row with no agent, model name `telephony:pbx-
 - `username` is the SIP username of the line's account: what `resolve` takes as `fromEndpoint`.
 - `from` and `caller` are the blocks that a plan for a call from that line carries. `from.presentNumber` is null when the line has no number to show.
 - A phone with no SIP account, such as a browser phone or a mobile, has no line here.
-- Only an organisation with the phone system on, and not deactivated, has its lines listed.
+- An organisation's lines are listed whatever its switches: also with the phone system off, a charge unpaid, or the organisation deactivated. An emergency plan is still given for those lines.
 - The state of a number's emergency address record is not here. The plan for the call gives it.
 
 Paging is by organisation. `limit` is how many organisations a page holds, not how many lines: from 1 to 100, and 25 when absent. A page holds every line of each of its organisations, in organisation order and then line order. `next` is the `after` of the following page, and null on the last page. Treat it as opaque.

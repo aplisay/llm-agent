@@ -440,21 +440,34 @@ describe('the list of lines for call control', () => {
   });
 
   describe('an organisation whose phone system is off', () => {
-    test('is not listed while the capability is off or it is deactivated, and is listed again after', async () => {
-      const username = (await lineOf('400', orgs.c)).username;
+    test('keeps its lines in the list, with the blocks of its emergency plan', async () => {
+      const listed = await linesOf(orgs.c);
+      expect(listed.map((line) => [line.from.extensionNumber, line.from.presentNumber])).toEqual([['400', `+${ddi(21)}`]]);
+      const plan = (digits) => ok(post('ownerC', '/agent-db/pbx/resolve', { request: { kind: 'dialled', fromEndpoint: listed[0].username, digits } }));
+      const same = async (reason) => {
+        expect(await plan('02079460999')).toMatchObject({ action: 'refuse', reason });
+        expect(await linesOf(orgs.c)).toEqual(listed);
+        expect(await plan('999')).toMatchObject({
+          action: 'emergency', from: listed[0].from, caller: listed[0].caller, emergency: { presentNumber: listed[0].from.presentNumber },
+        });
+        // A server that has just started gives the same.
+        expect((await fresh()).filter((line) => line.organisationId === orgs.c)).toEqual(listed);
+      };
+
       await ok(put('operator', `/organisations/${orgs.c}/capabilities`, { capabilities: [] }));
-      expect(await linesOf(orgs.c)).toEqual([]);
-      await ok(put('operator', `/organisations/${orgs.c}/capabilities`, { capabilities: ['phoneSystem'] }));
-      expect((await linesOf(orgs.c)).map((line) => line.username)).toEqual([username]);
+      try {
+        await same('phone_system_disabled');
+      } finally {
+        await ok(put('operator', `/organisations/${orgs.c}/capabilities`, { capabilities: ['phoneSystem'] }));
+      }
 
       await ok(del('operator', `/organisations/${orgs.c}`));
       try {
-        expect(await linesOf(orgs.c)).toEqual([]);
-        expect((await linesOf(orgs.b)).length).toBe(1);
+        await same('organisation_deactivated');
       } finally {
         await ok(patch('operator', `/organisations/${orgs.c}`, { status: 'active' }));
       }
-      expect((await linesOf(orgs.c)).map((line) => line.username)).toEqual([username]);
+      expect(await linesOf(orgs.c)).toEqual(listed);
     });
   });
 });
