@@ -100,6 +100,33 @@ refusals by code (`notices`). If a stored hours rule no longer checks, every
 outside call is refused: `effective.hoursValid` is then false and
 `effective.hours` shows the rule as stored.
 
+**Is calling out blocked now?** `GET /api/organisations/{id}/outbound-policy/now`
+says whether an outside call would be refused at this moment, whatever number
+is dialled, and lists every reason that applies, for a banner. `notices` lists
+today's refusals, which do not always mean calls are refused now. Whoever may
+read the policy may read it.
+
+```json
+{ "blocked": true, "at": "2026-11-27T15:04:05.000Z",
+  "reasons": [{ "code": "daily_spend_limit", "message": "Today's spend on outside calls has reached its limit.",
+                "limit": "spendPerDayMicros", "value": 50000000, "current": 50120000, "until": "2026-11-28T00:00:00.000Z" }] }
+```
+
+The reasons, in the order a call meets them: `organisation_deactivated` and
+`charge_unpaid` (the phones make no calls but to 999 and 112), `balance_empty`,
+`destination_class` (only when the policy opens no class at all),
+`outside_hours`, then each limit reached: `calls_in_progress_limit`,
+`calls_per_minute_limit`, `daily_spend_limit` and `monthly_spend_limit`. A limit
+reason has the policy field (`limit`), its value and what it counts now, and a
+spend limit has `until`, the end of its day or month in the policy's time zone.
+`outbound_policy_unavailable` means a count could not be read. A number of a
+class the policy closes is refused too, and is not a reason here.
+
+The answer is worked out with the same counts and spend as a call, and writes
+no decision. Each API server keeps an organisation's answer for 15 seconds, and
+forgets it when the policy is changed through that server. So a change made
+elsewhere, a top-up, or a call that ends can take up to 15 seconds to show.
+
 **What it counts.** For each organisation, the two counts and the write of the
 decision are one step under a lock, so calls decided at the same moment cannot
 all pass a limit. The decision takes its time from the database once it holds

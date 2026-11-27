@@ -3940,6 +3940,54 @@ components:
           type: object
           nullable: true
           description: "When outside calls may be made, in the form of `OutboundHours`. Not set or null: at any time."
+    OutboundNow:
+      type: object
+      description: |-
+        Whether an outside call by the organisation would be refused at this moment, and every reason why.
+        See "Is calling out blocked now?" in docs/outbound-call-authorisation.md.
+      properties:
+        blocked:
+          type: boolean
+          description: True when at least one reason applies
+        at:
+          type: string
+          format: date-time
+          description: When the answer was worked out. It is kept for up to 15 seconds
+        reasons:
+          type: array
+          items:
+            type: object
+            properties:
+              code:
+                type: string
+                enum: [organisation_deactivated, charge_unpaid, balance_empty, destination_class, outside_hours, daily_spend_limit, monthly_spend_limit, calls_in_progress_limit, calls_per_minute_limit, outbound_policy_unavailable]
+              message:
+                type: string
+                description: One sentence for a person
+              limit:
+                type: string
+                enum: [callsInProgress, callsPerMinute, spendPerDayMicros, spendPerMonthMicros]
+                description: For a limit reached, the policy field
+              value:
+                type: number
+                description: The limit that applies. Spend is in micros of a pound
+              current:
+                type: number
+                description: What it counts now
+              until:
+                type: string
+                format: date-time
+                description: For a spend limit, when its day or month ends in the policy's time zone
+      example:
+        blocked: true
+        at: '2026-11-27T15:04:05.000Z'
+        reasons:
+          - code: daily_spend_limit
+            message: "Today's spend on outside calls has reached its limit."
+            limit: spendPerDayMicros
+            value: 50000000
+            current: 50120000
+            until: '2026-11-28T00:00:00.000Z'
     OrganisationOutboundPolicy:
       type: object
       properties:

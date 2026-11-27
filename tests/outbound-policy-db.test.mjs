@@ -121,7 +121,11 @@ describe('the outbound policy of an organisation', () => {
       res.locals.user = users[req.headers['x-test-user']];
       next();
     });
-    for (const file of ['../api/paths/organisations/{organisationId}/outbound-policy.js', '../api/paths/brands/{brandId}.js']) {
+    for (const file of [
+      '../api/paths/organisations/{organisationId}/outbound-policy.js',
+      '../api/paths/organisations/{organisationId}/outbound-policy/now.js',
+      '../api/paths/brands/{brandId}.js',
+    ]) {
       await import(file);
     }
     await openapi.initialize({
@@ -129,7 +133,7 @@ describe('the outbound policy of an organisation', () => {
       apiDoc: yaml.load(fs.readFileSync('./api/api-doc.yaml', 'utf8')),
       dependencies: { logger: log, voices: {}, wsServer: {} },
       paths: './api/paths',
-      routesGlob: '{organisations/{organisationId}/outbound-policy,brands/{brandId}}.js',
+      routesGlob: '{organisations/{organisationId}/outbound-policy,organisations/{organisationId}/outbound-policy/now,brands/{brandId}}.js',
       promiseMode: true,
       errorMiddleware: (err, req, res, next) => res.status(err.status || 500).json(err),
     });
@@ -788,6 +792,97 @@ describe('the outbound policy of an organisation', () => {
     });
   });
 
+  describe('whether calling out is blocked now', () => {
+    let nowLib;
+    const read = async (user = 'owner', organisationId = orgs.phone, { keep = false } = {}) => {
+      if (!keep) nowLib.forgetOutboundNow(organisationId);
+      return get(user, `/organisations/${organisationId}/outbound-policy/now`);
+    };
+    const codes = async (user, organisationId) => (await read(user, organisationId)).body.reasons.map((r) => r.code);
+    const resetOrganisation = () => Organisation.update(
+      { status: 'active', balance: null, chargeUnpaidSince: null },
+      { where: { id: orgs.phone } },
+    );
+    const londonHour = () => Number(new Intl.DateTimeFormat('en-GB', { timeZone: 'Europe/London', hour: '2-digit', hourCycle: 'h23' }).format(new Date()));
+    const hh = (h) => `${String(h % 24).padStart(2, '0')}:00`;
+
+    beforeAll(async () => { nowLib = await import('../lib/outbound-now.js'); });
+    afterEach(resetOrganisation);
+
+    test('with nothing in the way, it is not blocked, and the read writes no decision', async () => {
+      const before = await db.OutboundEvent.count({ where: { organisationId: orgs.phone } });
+      const res = await read();
+      expect(res.status).toBe(200);
+      expect(res.body).toEqual({ blocked: false, at: expect.any(String), reasons: [] });
+      expect(res.headers['cache-control']).toBe('private, max-age=15');
+      expect(await db.OutboundEvent.count({ where: { organisationId: orgs.phone } })).toBe(before);
+    });
+
+    test("a daily spend limit reached is listed with what it counts and when the day ends", async () => {
+      await setPolicy(orgs.phone, { spendPerDayMicros: 1_000_000 });
+      await UsageRecord.create({
+        organisationId: orgs.phone, technology: 'pbx', provider: 'pbx', unit: 'milliseconds', quantity: 60_000, finalised: true,
+        billedAt: new Date(), costMicros: 1_000_000, sessionId: randomUUID(), meterKey: 'now', metadata: { destinationRaw: '+442079460123' },
+      });
+      const { periodsAt } = await import('../lib/outbound-policy.js');
+      const { dayStart } = periodsAt(new Date());
+      const res = await read();
+      expect(res.body.blocked).toBe(true);
+      expect(res.body.reasons).toEqual([{
+        code: 'daily_spend_limit', message: expect.any(String), limit: 'spendPerDayMicros', value: 1_000_000, current: 1_000_000,
+        until: periodsAt(new Date(dayStart.valueOf() + 36 * 3_600_000)).dayStart.toISOString(),
+      }]);
+    });
+
+    test('outside its hours, and with the calls at once in progress, both are listed', async () => {
+      await setPolicy(orgs.phone, {
+        callsInProgress: 1,
+        hours: { timeZone: 'Europe/London', days: [1, 2, 3, 4, 5, 6, 7], from: hh(londonHour() + 2), to: hh(londonHour() + 3) },
+      });
+      await liveLeg(orgs.phone);
+      const res = await read();
+      expect(res.body.reasons.map((r) => r.code)).toEqual(['outside_hours', 'calls_in_progress_limit']);
+      expect(res.body.reasons[1]).toMatchObject({ limit: 'callsInProgress', value: 1, current: 1 });
+      expect(res.body.reasons[1]).not.toHaveProperty('until');
+    });
+
+    test('a deactivated organisation, an unpaid charge, an empty balance and no class open are each listed', async () => {
+      await Organisation.update({ balance: 0 }, { where: { id: orgs.phone } });
+      expect(await codes()).toEqual(['balance_empty']);
+      await Organisation.update({ status: 'deactivated' }, { where: { id: orgs.phone } });
+      expect(await codes()).toEqual(['organisation_deactivated', 'balance_empty']);
+      await Organisation.update(
+        { status: 'active', balance: -1, chargeUnpaidSince: new Date(Date.now() - 31 * 86_400_000) },
+        { where: { id: orgs.phone } },
+      );
+      expect(await codes()).toEqual(['charge_unpaid', 'balance_empty']);
+      await resetOrganisation();
+      const closed = Object.fromEntries(['ukLandline', 'ukMobile', 'freephone', 'service', 'premium', 'crownDependencies', 'international'].map((c) => [c, false]));
+      await setPolicy(orgs.phone, { classes: closed });
+      expect(await codes()).toEqual(['destination_class']);
+    });
+
+    test('an answer is kept for a while, and a change of policy through the route drops it', async () => {
+      const first = await read();
+      await setPolicy(orgs.phone, { callsInProgress: 0 });
+      const kept = await read('owner', orgs.phone, { keep: true });
+      expect(kept.body).toEqual(first.body);
+      expect((await put('owner', `/organisations/${orgs.phone}/outbound-policy`, { callsPerMinute: 4 })).status).toBe(200);
+      const fresh = await read('owner', orgs.phone, { keep: true });
+      expect(fresh.body.reasons.map((r) => r.code)).toEqual(['calls_in_progress_limit']);
+    });
+
+    test('an admin and an operator may read it; a member, another organisation and an organisation without the phone system may not', async () => {
+      expect((await read('admin')).status).toBe(200);
+      expect((await read('operator')).status).toBe(200);
+      expect((await read('member')).status).toBe(403);
+      expect((await read('otherOwner')).status).toBe(404);
+      const plain = await read('plainOwner', orgs.plain);
+      expect(plain.status).toBe(403);
+      expect(plain.body.code).toBe('phone_system_disabled');
+    });
+  });
+
   // Last: switching a schema step off cannot be undone in this process.
   describe('before the schema 77 upgrade', () => {
     test('outside calls of an organisation with the phone system are refused, and others are not', async () => {
@@ -796,6 +891,7 @@ describe('the outbound policy of an organisation', () => {
       await expect(authorise(orgs.phone, '+442079460123')).resolves.toMatchObject({ allowed: false, code: 'outbound_policy_not_ready' });
       await expect(authorise(orgs.plain, '+442079460123')).resolves.toMatchObject({ allowed: true });
       expect((await get('owner', `/organisations/${orgs.phone}/outbound-policy`)).status).toBe(503);
+      expect((await get('owner', `/organisations/${orgs.phone}/outbound-policy/now`)).status).toBe(503);
     });
   });
 });
