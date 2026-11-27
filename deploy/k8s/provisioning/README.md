@@ -102,16 +102,23 @@ kubectl --context=<cluster> -n b2bua rollout restart deployment/provisioning
 
 ## The certificate
 
-cert-manager renews the certificate 30 days before it ends. The service
-reads its certificate files once, at start, so the manifests restart it:
+cert-manager renews the certificate 30 days before it ends, and writes the
+new one to the Secret the pod mounts.
 
-- The container copies the certificate it is about to load to `/tmp`.
-- The liveness probe compares that copy with the file on disk. After a
-  renewal they differ, the probe fails, and the kubelet restarts the
-  container, which loads the new certificate.
+- The service reads its certificate files again once a minute and loads a
+  renewed certificate by itself. Nothing restarts.
+- The liveness probe checks that the certificate the service presents is
+  the one on disk. With such a build it finds them the same, apart from at
+  most one check in the minute after a renewal. It restarts the container
+  only after three failed checks.
+- A build from before the service could do this never loads the new
+  certificate. There the probe fails three times and the kubelet restarts
+  the container, which loads it. So the manifests are safe with either
+  build.
 
-Expect one restart about every 60 days. Do not replace the liveness probe
-with a plain HTTP probe.
+Do not replace the liveness probe with a plain HTTP probe while a build
+without the reload can still run: that build would serve its old
+certificate until it expires.
 
 ## The Snom CA file
 
