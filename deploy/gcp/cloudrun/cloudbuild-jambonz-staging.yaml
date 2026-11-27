@@ -1,12 +1,20 @@
 steps:
   - name: gcr.io/cloud-builders/docker
+    # Build secrets need BuildKit.
+    env:
+      - DOCKER_BUILDKIT=1
     args:
       - build
       - '--no-cache'
+      # Build secrets, read from this step's environment (secretEnv below).
+      # Not build args: see agents/jambonz/Dockerfile.
+      - '--secret'
+      - id=SECRETENV_BUNDLE,env=SECRETENV_BUNDLE
+      - '--secret'
+      - id=SECRETENV_KEY,env=SECRETENV_KEY
+      # The Dockerfile needs a new BUILD_ID with the secrets.
       - '--build-arg'
-      - SECRETENV_BUNDLE
-      - '--build-arg'
-      - SECRETENV_KEY
+      - BUILD_ID=$BUILD_ID
       - '-t'
       - >-
         $_AR_HOSTNAME/$PROJECT_ID/containers/$REPO_NAME/$_SERVICE_NAME:$COMMIT_SHA
