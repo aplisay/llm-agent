@@ -199,7 +199,7 @@ describe('the directory API completed', () => {
     test('a dry run changes nothing and reports what the real batch then does', async () => {
       const { entries } = await ok(get('ownerOn', '/directory/entries'));
       const dan = entries.find((e) => e.name === 'Dan Price');
-      const desk = (await ok(post('ownerOn', '/phones', { kind: 'deskphone', mac: mac(1), model: '710', label: 'Dan desk', people: [dan.id] }), 201)).phone;
+      const desk = (await ok(post('ownerOn', '/phones', { kind: 'deskphone', mac: mac(1), model: 'D713', label: 'Dan desk', people: [dan.id] }), 201)).phone;
       expect(desk.lines.map((l) => l.number)).toEqual(['106', '230']);
       const sales = await ok(post('ownerOn', '/directory/entries', { kind: 'team', name: 'Sales', extension: '200', extensionType: 'ring_all' }), 201);
       const body = { ops: [{ op: 'member.add', extensionId: sales.entry.extensionId, entryId: dan.id }] };

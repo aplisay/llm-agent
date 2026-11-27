@@ -355,6 +355,55 @@ describe('desk phone provisioning', () => {
     });
   });
 
+  describe('a model the catalogue no longer supports', () => {
+    test('a new phone of that model is refused', async () => {
+      const res = await post('ownerA', '/phones', { kind: 'deskphone', mac: mac(15), model: '710', label: 'Old phone', people: [] });
+      expect(res.status).toBe(400);
+      expect(res.body.code).toBe('model_not_supported');
+    });
+
+    test('a phone row made before still lists, and fails clearly until its model is changed', async () => {
+      const phone = (await ok(post('ownerA', '/phones', { kind: 'deskphone', mac: mac(15), model: 'D713', label: 'Old phone', people: [made.ada.id] }), 201)).phone;
+      const token = tokenOf((await ok(post('ownerA', `/phones/${phone.id}/provision`))).provisioning.url);
+      // As a row stored while the 710 was still supported.
+      await db.Device.update({ model: '710' }, { where: { id: phone.device.id } });
+      const cert = ca.issue(mac(15).toUpperCase());
+      const fetchIt = (userAgent) => fetchFile({ token, file: `${mac(15)}.xml`, certificate: cert.certificate, userAgent });
+
+      const listed = (await ok(get('ownerA', '/phones'))).phones.find((item) => item.id === phone.id);
+      expect(listed.device).toMatchObject({ model: '710', state: 'waiting', failure: null });
+      expect(listed.capacity).toBe(4);
+      expect(listed.lines).toHaveLength(4);
+      expect((await ok(patch('ownerA', `/phones/${phone.id}`, { label: 'Old 710' }))).phone.label).toBe('Old 710');
+
+      for (const userAgent of ['snom710-SIP 8.9.3.80', '']) {
+        expect(await fetchIt(userAgent)).toMatchObject({ status: 404, body: '', result: 'model_not_supported' });
+      }
+      expect((await ok(get('ownerA', `/phones/${phone.id}`))).device.failure).toBe('model_not_supported');
+
+      const again = await post('ownerA', `/phones/${phone.id}/provision`);
+      expect(again.status).toBe(409);
+      expect(again.body.code).toBe('model_not_supported');
+      // The refused request left the old address alone.
+      expect((await db.Device.findByPk(phone.device.id)).tokenHash).not.toBeNull();
+
+      await ok(patch('ownerA', `/phones/${phone.id}`, { model: 'D713' }));
+      await ok(post('ownerA', `/phones/${phone.id}/provision`));
+      await ok(post('ownerA', `/phones/${phone.id}/wipe`));
+      await ok(del('ownerA', `/phones/${phone.id}`));
+    });
+
+    test('a phone that says it is that model is refused, whatever was typed', async () => {
+      const phone = (await ok(post('ownerA', '/phones', { kind: 'deskphone', mac: mac(16), model: 'D713', label: 'Typed wrong', people: [] }), 201)).phone;
+      const token = tokenOf((await ok(post('ownerA', `/phones/${phone.id}/provision`))).provisioning.url);
+      const cert = ca.issue(mac(16).toUpperCase());
+      const answer = await fetchFile({ token, file: `${mac(16)}.xml`, certificate: cert.certificate, userAgent: 'snom710-SIP 8.9.3.80' });
+      expect(answer).toMatchObject({ status: 404, result: 'model_not_supported' });
+      expect((await ok(get('ownerA', `/phones/${phone.id}`))).device).toMatchObject({ model: 'D713', reportedModel: null, failure: 'model_not_supported' });
+      await ok(del('ownerA', `/phones/${phone.id}`));
+    });
+  });
+
   describe('the HTTP server', () => {
     const path = () => `/snom/${made.token}/${mac(1)}.xml`;
 

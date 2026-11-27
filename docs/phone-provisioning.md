@@ -66,7 +66,21 @@ The file does not pin a firmware version.
 
 ## The phone's model
 
-The phone names its model when it fetches. If that differs from the model that was typed, the reported model wins and the phone's lines are worked out again. A model that is not in the catalogue is refused, and the phone shows the failure `model_not_supported`.
+The phone names its model when it fetches. If that differs from the model that was typed, the reported model wins and the phone's lines are worked out again. A model that is not supported is refused, and the phone shows the failure `model_not_supported`. When the request names no model, the model on the phone's row decides.
+
+The supported models are the Snom D713, D717, D735 and D785. Each leaves the factory with its own SHA-256 certificate under Snom's SHA-256 CA.
+
+### Models with a built-in SHA-1 certificate
+
+Older Snom models, among them the 710, D712, 715, D725, D745 and D765, leave the factory with a SHA-1 certificate under Snom's older CA. The service refuses such a certificate (`certificate_untrusted` in the fetch log), and that does not change.
+
+Snom's documentation describes an upgrade that gives such a phone its own SHA-256 certificate (the "Upgrade to SHA-2" section of Snom's TLS Support page). A phone of these models needs that upgrade before it could fetch from this service. This has not been tested with this service on any of these models, so none of them is in the list of supported models.
+
+The 710 is in the catalogue as not supported:
+
+- `POST /phones` and a change of model refuse it: 400, code `model_not_supported`.
+- A 710 that is already in a directory still lists, with its lines. `POST /phones/{phoneId}/provision` refuses it: 409, code `model_not_supported`. Its fetches are refused: with `certificate_untrusted` while it presents a SHA-1 certificate, and otherwise with `model_not_supported`, which the phone then shows as its failure.
+- If the model was typed wrongly, change it with `PATCH /phones/{phoneId}` and provision again. A phone that has reported its model cannot be changed: remove it.
 
 A platform operator can set `lineLimit` on a desk phone with `PATCH /phones/{phoneId}` to give it fewer lines than its model takes.
 
@@ -99,7 +113,7 @@ The call control and SIP edge sides of this are not built yet.
 
 The certificate that fetched first stays the phone's certificate through a new address, a wipe and a removal. No route clears it yet.
 
-`device.failure` is `wrong_device` when a different phone asked for the settings, and `model_not_supported` when the phone reported a model the catalogue does not have. `wrong_device` stays until the phone is provisioned again.
+`device.failure` is `wrong_device` when a different phone asked for the settings, and `model_not_supported` when the phone's model is not supported. `wrong_device` stays until the phone is provisioned again.
 
 ## Wipe
 
