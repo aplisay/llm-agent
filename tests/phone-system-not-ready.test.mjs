@@ -35,6 +35,8 @@ const { resolveRequest } = await import('../lib/pbx/resolve.js');
 const { addEvents } = await import('../lib/pbx/call-records.js');
 const { default: capabilitiesRoute } = await import('../api/paths/organisations/{organisationId}/capabilities.js');
 const { default: phoneSystemRoute } = await import('../api/paths/organisations/{organisationId}/phone-system.js');
+const { default: addressesRoute } = await import('../api/paths/emergency-addresses.js');
+const { default: addressRoute } = await import('../api/paths/emergency-addresses/{number}.js');
 
 const logger = { info() {}, error() {}, debug() {}, warn() {} };
 const operator = { id: 'u-op', role: 'superAdmin' };
@@ -81,6 +83,17 @@ describe('with the phone system off', () => {
     expect(set.body.code).toBe('phone_system_not_ready');
     const read = await call(phoneSystemRoute(logger).GET, { params: { organisationId: 'o1' } });
     expect(read.statusCode).toBe(503);
+  });
+
+  test('the emergency address routes answer 503, not 403', async () => {
+    const params = { number: '442071234567' };
+    for (const res of [
+      await call(addressesRoute(logger).GET),
+      await call(addressRoute(logger).GET, { params }),
+      await call(addressRoute(logger).PUT, { params, body: { mode: 'organisation' } }),
+    ]) {
+      expect({ status: res.statusCode, code: res.body.code }).toEqual({ status: 503, code: 'phone_system_not_ready' });
+    }
   });
 
   test('call control: a number that rings an agent still resolves', async () => {
