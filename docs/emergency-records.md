@@ -207,7 +207,7 @@ The list answers `{ "items": [...] }`, in number order, with no paging. It has o
 Body: `{ "mode": "own", "address": { "name": "...", "thoroughfare": "...", "postcode": "..." } }`. Send `mode`, `address`, or both. The answer is the record after the change.
 
 - `mode` is `organisation` or `own`. `carrier` is refused with `mode_not_allowed`: a number that has a record here is at the platform's carrier.
-- `address` is the number's own address. Its fields are `name`, `premises`, `thoroughfare`, `locality`, `postcode` and `businessSuffix`. It needs a name, a street and a postcode, as the organisation's address does. Other fields are dropped. Null removes the address.
+- `address` is the number's own address. Its fields are `name`, `premises`, `thoroughfare`, `locality`, `postcode` and `businessSuffix`. It needs a name, a postcode, and a street or a building (`thoroughfare` or `premises`), as the organisation's address does. Other fields are dropped. Null removes the address.
 - A number in mode `own` must have an address of its own: `address_required`.
 - The number's own address is kept when its mode goes back to `organisation`.
 

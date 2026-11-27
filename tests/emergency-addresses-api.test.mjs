@@ -372,6 +372,21 @@ describe('emergency addresses for an organisation\'s own users', () => {
       expect(set.ownAddress).toEqual({ ...OWN_ADDRESS, businessSuffix: 'Ltd' });
     });
 
+    test('takes an address with a building and no street, for a number and for the organisation', async () => {
+      const rectory = { name: 'Little Snoring Surgery', premises: 'The Old Rectory', locality: 'Little Snoring', postcode: 'NR21 0HX' };
+      const number = await newNumber();
+      const set = await put('owner', number, { mode: 'own', address: rectory });
+      expect(set).toMatchObject({ address: rectory, addressSummary: 'Little Snoring Surgery, The Old Rectory, NR21 0HX' });
+      const settings = (body) => as('orgAdmin')(`/organisations/${orgs.on}/phone-system`, { method: 'PUT', body });
+      try {
+        expect((await settings({ address: rectory })).address).toEqual(rectory);
+        // A name and a postcode alone are still not an address.
+        await expect(settings({ address: { name: 'Little Snoring Surgery', postcode: 'NR21 0HX' } })).rejects.toEqual(refusedWith(400, 'invalid_address'));
+      } finally {
+        await settings({ address: ORG_ADDRESS });
+      }
+    });
+
     test('is refused when it is not a mode and an address the record can hold', async () => {
       const number = await newNumber();
       const refusals = [

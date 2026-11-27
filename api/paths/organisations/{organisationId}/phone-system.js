@@ -68,7 +68,7 @@ export default function (logger) {
     if (address !== undefined) {
       fields.address = address === null ? null : cleanAddress(address);
       if (address !== null && !fields.address) {
-        return res.status(400).send({ error: 'An address needs a name, a street and a postcode.', code: 'invalid_address', field: 'address' });
+        return res.status(400).send({ error: 'An address needs a name, a postcode, and a street or a building.', code: 'invalid_address', field: 'address' });
       }
     }
     if (mainNumber !== undefined) {
