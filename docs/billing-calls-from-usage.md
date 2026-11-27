@@ -545,12 +545,22 @@ extension its own price.
   has no `extension` line. A write for a deactivated organisation shows no
   charges.
 
-**Recording and transcription.** The end of a call may say how long it was
-recorded (`recordedMs`) and how much was transcribed (`transcribedMs`). Each is
-held to the length of the call or leg, and a value that is not a whole number
-of milliseconds is ignored. Each writes a row (`technology: recording` or
-`transcription`, `unit: milliseconds`) priced by a `recording` or
-`transcription` line by the minute.
+**Recording and transcription.** The end of a call or leg may say how much
+was transcribed (`transcribedMs`). Call control sends how long a call's
+recording is (`recordedMs`) on a second end of the call, once the recording
+route has stored the file ([the recording of a
+call](phone-system.md#the-recording-of-a-call)). A recording that is not kept
+sends nothing. Each length is held to the length of the call or leg, and a
+value that is not a whole number of milliseconds is ignored. Each writes one
+row (`technology: recording` or `transcription`, `unit: milliseconds`) priced
+by a `recording` or `transcription` line by the minute. The first length that
+writes the row stands, so the same end sent again writes nothing.
+
+A recording row is priced only when the call holds its recording at the moment
+the length arrives. A length on a leg, on a call whose recording was not
+stored, or on a call that has been erased is written at nothing (`costStatus`
+`free`), and a later length does not change it. Erasing a call keeps its
+usage rows, so a recording charged before the erasure stays charged.
 
 **An empty balance.** With the credit balance at zero or below, outside calls
 are refused (`balance_empty`, [outbound call
