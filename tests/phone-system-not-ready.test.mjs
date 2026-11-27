@@ -33,6 +33,7 @@ const { phoneSystemReady, requirePhoneSystem } = await import('../lib/capabiliti
 const { directoryContext } = await import('../lib/pbx/route-helpers.js');
 const { resolveRequest } = await import('../lib/pbx/resolve.js');
 const { addEvents } = await import('../lib/pbx/call-records.js');
+const { default: linesRoute } = await import('../api/paths/agent-db/pbx/lines.js');
 const { default: capabilitiesRoute } = await import('../api/paths/organisations/{organisationId}/capabilities.js');
 const { default: phoneSystemRoute } = await import('../api/paths/organisations/{organisationId}/phone-system.js');
 
@@ -95,5 +96,11 @@ describe('with the phone system off', () => {
       .rejects.toMatchObject({ status: 503, code: 'phone_system_not_ready' });
     await expect(addEvents('c1', [{ id: '00000000-0000-4000-8000-000000000001', type: 'ringing', at: new Date().toISOString() }]))
       .rejects.toMatchObject({ status: 503, code: 'phone_system_not_ready' });
+  });
+
+  test('call control: the list of lines answers 503', async () => {
+    const res = makeRes();
+    await linesRoute(logger).GET({ originalUrl: '/api/agent-db/pbx/lines', log: logger }, res);
+    expect({ status: res.statusCode, code: res.body.code }).toEqual({ status: 503, code: 'phone_system_not_ready' });
   });
 });
