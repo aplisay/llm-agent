@@ -197,6 +197,11 @@ describe('ring_all', () => {
     ext(s, 'x-200').params = { record: true, noAnswer: { kind: 'extension', extensionId: 'x-210' } };
     const result = plan(s, toExtension('x-200'));
     expect(result.recording).toEqual({ record: true });
+    // A transcript is asked for only with a recording.
+    ext(s, 'x-200').params = { record: true, transcribe: true };
+    expect(plan(s, toExtension('x-200')).recording).toEqual({ record: true, transcribe: {} });
+    ext(s, 'x-200').params = { transcribe: true };
+    expect(plan(s, toExtension('x-200')).recording).toEqual({ record: false });
     expect(result.noAnswer).toEqual({ kind: 'extension', extensionId: 'x-210', number: '210' });
   });
 
@@ -831,9 +836,10 @@ describe('extension params', () => {
     for (const value of [4, 91, 300, 30.5, '30']) refusedAs(ok('ring_all', { ringSeconds: value }, '1'), 'invalid_params', 'params.ringSeconds');
   });
 
-  test('callWaiting and record are booleans', () => {
-    expect(ok('ring_all', { callWaiting: false, record: true }, '1')).toEqual({ ok: true, params: { callWaiting: false, record: true } });
+  test('callWaiting, record and transcribe are booleans', () => {
+    expect(ok('ring_all', { callWaiting: false, record: true, transcribe: true }, '1')).toEqual({ ok: true, params: { callWaiting: false, record: true, transcribe: true } });
     refusedAs(ok('ring_all', { record: 'yes' }, '1'), 'invalid_params', 'params.record');
+    refusedAs(ok('ring_all', { transcribe: 1 }, '1'), 'invalid_params', 'params.transcribe');
   });
 
   test('an unknown key is refused', () => {
@@ -875,6 +881,7 @@ describe('extension params', () => {
       ringSeconds: 30,
       callWaiting: true,
       record: false,
+      transcribe: false,
       stepSeconds: 20,
       order: 'fixed',
       openingHours: null,

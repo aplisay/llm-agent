@@ -17,6 +17,7 @@ jest.unstable_mockModule('../lib/database.js', () => ({
   Agent: {},
   Call: { findByPk: async () => ({ id: 'c1', organisationId: 'o1', modelName: 'telephony:pbx-call' }) },
   CallEvent: table,
+  TransactionLog: table,
   DirectoryEntry: table,
   Extension: table,
   ExtensionMember: table,
