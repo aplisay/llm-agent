@@ -131,12 +131,12 @@ async function main() {
         logger.info({ user }, 'created User');
         break;
       case 'add-authkey':
-        let token;
-        (await import('crypto')).randomBytes(48, function (err, buffer) {
-          token = buffer.toString('base64');
-        });
+        let token = (await import('crypto')).randomBytes(48).toString('base64');
+        if (!options.userId && !options.email) {
+          throw new Error(`${command} Must have either an email or userId`);
+        }
         let where = {};
-        options.userId && (where.userId = options.userId);
+        options.userId && (where.id = options.userId);
         options.email && (where.email = { [Op.iLike]: options.email });
 
         if (!(user = await User.findOne({ where }))) {
@@ -174,21 +174,18 @@ async function main() {
         authKeys.forEach(({ key, User: user }) => console.log(`${user && user.name} ${user.email}, key: "${key}"`));
         break;
 
-      case 'delete-user':
-        where = {
-          userId: options.userId,
-          email: options.email && { [Op.like]: options.email }
-        };
-        if (Object.keys(where).length !== 1) {
+      case 'delete-user': {
+        if (!options.userId === !options.email) {
           throw new Error(`${command} Must have either an email or userId`);
-          exit(1);
         }
-        if (!(user = await User.findOne({ where: { email: { [Op.like]: options.email } } }))) {
+        const userWhere = options.userId ? { id: options.userId } : { email: { [Op.like]: options.email } };
+        if (!(user = await User.findOne({ where: userWhere }))) {
           throw new Error(`Can't find user: ${options.userId || options.email}`);
         }
         await user.destroy();
         logger.info({ user }, 'deleted User');
         break;
+      }
 
       case 'delete-org':
         if (!options.orgName) {
@@ -296,6 +293,10 @@ async function main() {
           throw new Error('Must specify one of --orgId, --orgName, --userId, or --email');
         }
 
+        const userInclude = {
+          model: User,
+          required: true,
+        };
         let usageSpec = {
 
           where: {
@@ -306,10 +307,7 @@ async function main() {
           },
           order: [['startedAt', 'ASC']],
           include: [
-            {
-              model: User,
-              required: true,
-            },
+            userInclude,
             {
               model: Organisation,
               required: true
@@ -332,9 +330,9 @@ async function main() {
           };
         }
         else if (options.userId) {
-          usageSpec.include.where = { ...(usageSpec.include.where || {}), id: options.userId };
+          userInclude.where = { id: options.userId };
         } else if (options.email) {
-          usageSpec.include.where = { ...(usageSpec.include.where || {}), email: { [Op.iLike]: options.email } };
+          userInclude.where = { email: { [Op.iLike]: options.email } };
         }
         else {
           throw new Error('Must specify one of --orgId, --userId, or --email');
