@@ -963,3 +963,43 @@ describe('a deactivated organisation', () => {
     expect(plan(withStatus(status), toExtension('x-100')).action).toBe('ring');
   });
 });
+
+describe('a refusal of digits dialled on a line', () => {
+  const ROB_LINE = 'ln-p-rob-desk-1';
+  const DAY = 24 * 60 * 60 * 1000;
+  const refusedFor = {
+    organisation_deactivated: (s) => { s.organisation.status = 'deactivated'; },
+    phone_system_disabled: (s) => { s.organisation.capabilities = []; },
+    charge_unpaid: (s) => { Object.assign(s.organisation, { balance: -100, chargeUnpaidSince: new Date(WED_1930.valueOf() - 30 * DAY) }); },
+  };
+  const refusing = (reason, s = baseSnapshot()) => {
+    refusedFor[reason](s);
+    return s;
+  };
+  const dial = (snapshot, digits, lineId = ROB_LINE) => plan(snapshot, { kind: 'dialled', lineId, digits });
+
+  test.each(Object.keys(refusedFor))('%s names the line and the number it shows, as the plan it stands in for does', (reason) => {
+    // A call out and an internal call.
+    for (const digits of ['02079460999', '101']) {
+      const allowed = dial(baseSnapshot(), digits);
+      const result = dial(refusing(reason), digits);
+      expect(result).toMatchObject({ action: 'refuse', reason, organisationId: 'org-1' });
+      expect({ digits, from: result.from, caller: result.caller }).toEqual({ digits, from: allowed.from, caller: allowed.caller });
+    }
+    expect(dial(refusing(reason), '101').from).toMatchObject({ lineId: ROB_LINE, extensionNumber: '100', presentNumber: '+442079460820' });
+  });
+
+  test('a line with nothing to show is still named, with presentNumber null', () => {
+    const s = baseSnapshot();
+    s.numbers = s.numbers.filter((n) => n.extensionId !== 'x-100');
+    s.organisation.mainNumber = null;
+    const result = dial(refusing('organisation_deactivated', s), '101');
+    expect(result.from).toMatchObject({ lineId: ROB_LINE, presentNumber: null });
+  });
+
+  test('a line the snapshot does not have, and a call that is not from a line, name no line', () => {
+    expect(dial(refusing('organisation_deactivated'), '101', 'ln-nowhere')).not.toHaveProperty('from');
+    expect(plan(refusing('organisation_deactivated'), toExtension('x-100'))).not.toHaveProperty('from');
+    expect(plan(refusing('charge_unpaid'), { kind: 'line', lineNumber: 1, callerId: CALLER })).not.toHaveProperty('from');
+  });
+});

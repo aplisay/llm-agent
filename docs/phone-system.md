@@ -179,6 +179,8 @@ A call out that would show a number whose emergency address record was rejected 
 
 A phone never rings for a call it places. When a line dials an extension that its own phone rings for, such as a team its user belongs to, the plan leaves that phone out and lists it in `skipped` with the reason `caller_phone`. The user's other phones still ring.
 
+A refusal of digits dialled on a known line has the same `caller` and `from` as any other plan for that line, with `from.presentNumber`, the number the line shows on a call out. That holds for `organisation_deactivated`, `phone_system_disabled` and `charge_unpaid` as well as for `invalid_number` and `no_caller_id`. Call control keeps the number from every plan, so an emergency call it must place with no plan still shows it.
+
 ### A deactivated organisation
 
 When an organisation is deactivated (`DELETE /organisations/{id}`, or `status` set to `deactivated`), its phones take no calls. `resolve` refuses with `organisation_deactivated` every call the phone system would carry for it: calls out, calls between extensions, calls in to the numbers of its extensions, and the follow-ups about a call in progress. 999 and 112 still go out. A call to a number an agent listens on is not a phone system call, and is answered as before. `rings-now` shows that calls are not put through.
