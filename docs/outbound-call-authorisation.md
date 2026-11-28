@@ -100,6 +100,70 @@ refusals by code (`notices`). If a stored hours rule no longer checks, every
 outside call is refused: `effective.hoursValid` is then false and
 `effective.hours` shows the rule as stored.
 
+**Is calling out blocked now?** `GET /api/organisations/{id}/outbound-policy/now`
+says whether an outside call would be refused at this moment, whatever number
+is dialled, and lists every reason that applies, for a banner. `notices` lists
+today's refusals, which do not always mean calls are refused now.
+
+```json
+{ "blocked": true, "numbersStopped": true, "at": "2026-11-27T15:04:05.000Z",
+  "reasons": [{ "code": "emergency_record_rejected", "message": "Phone system calls that show these numbers are refused until their emergency address record is corrected. 999 and 112 still go out.",
+                "scope": "numbers", "state": "rejected", "numbers": ["442079460001"], "count": 1, "total": 3 },
+              { "code": "daily_spend_limit", "message": "Today's spend on outside calls has reached its limit.", "scope": "all",
+                "limit": "spendPerDayMicros", "value": 50000000, "current": 50120000, "until": "2026-11-28T00:00:00.000Z" }] }
+```
+
+Each reason has a `scope`. `all` means every outside call is refused.
+`numbers` means only phone system calls that show the numbers the reason names
+are refused. Calls that show the organisation's other numbers still go out, and
+so do an agent's calls, which do not say which number they show. `blocked` is
+true when a reason has scope `all`, and `numbersStopped` is true when a reason
+has scope `numbers`. So a page should show the reasons whenever the list is not
+empty, and use `blocked` to say whether any call can go out.
+
+Whoever may read the policy (`organisation:read` on the organisation) gets the
+whole answer. Anyone else of the organisation who has `phone:read`, such as a
+member, gets only `blocked`, `numbersStopped` and `at`:
+
+```json
+{ "blocked": false, "numbersStopped": true, "at": "2026-11-27T15:04:05.000Z" }
+```
+
+That is enough for a page to say "outside calls are blocked" or "some of your
+numbers cannot call out", with no reasons, numbers, counts or spend. Anyone of
+another organisation without `organisation:read` there gets 403, as does a
+reader with neither permission.
+
+The reasons, in the order a call meets them: `organisation_deactivated` and
+`charge_unpaid` (the phones make no calls but to 999 and 112),
+`emergency_record_rejected` (scope `numbers`, below), `balance_empty`,
+`destination_class` (only when the policy opens no class at all),
+`outside_hours`, then each limit reached: `calls_in_progress_limit`,
+`calls_per_minute_limit`, `daily_spend_limit` and `monthly_spend_limit`. A limit
+reason has the policy field (`limit`), its value and what it counts now, and a
+spend limit has `until`, the end of its day or month in the policy's time zone.
+`outbound_policy_unavailable` means a count could not be read. A number of a
+class the policy closes is refused too, and is not a reason here.
+
+`emergency_record_rejected` is listed when any of the organisation's numbers
+has an emergency address record in a state that stops calls out that show it
+([below](#a-number-whose-emergency-address-record-was-rejected)). It has the `state`, the `numbers` in
+that state (sorted, at most 20, as the phone number routes show them), `count`,
+how many numbers are in that state, and `total`, how many numbers the
+organisation has. With `count` and `total` a page can say "1 of your 3 numbers"
+or "all your numbers". Each state that stops calls gives one reason. Today
+that is `rejected` only.
+
+When `count` equals `total`, no phone system call can go out to an outside
+number, apart from 999 and 112. `blocked` is still false then, because an
+agent's call does not say which number it shows, and still goes out.
+
+The answer is worked out with the same counts and spend as a call, and writes
+no decision. Each API server keeps an organisation's answer for 15 seconds, and
+forgets it when the policy is changed through that server. So a change made
+elsewhere, a top-up, a call that ends, or a change to a number's emergency
+address record can take up to 15 seconds to show.
+
 **What it counts.** For each organisation, the two counts and the write of the
 decision are one step under a lock, so calls decided at the same moment cannot
 all pass a limit. The decision takes its time from the database once it holds

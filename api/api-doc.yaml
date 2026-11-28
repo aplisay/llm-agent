@@ -4028,6 +4028,86 @@ components:
           type: object
           nullable: true
           description: "When outside calls may be made, in the form of `OutboundHours`. Not set or null: at any time."
+    OutboundNow:
+      type: object
+      description: |-
+        Whether an outside call by the organisation would be refused at this moment, and every reason why.
+        A reader who may not read the outbound policy, such as a member, gets only `blocked`, `numbersStopped` and `at`.
+        See "Is calling out blocked now?" in docs/outbound-call-authorisation.md.
+      properties:
+        blocked:
+          type: boolean
+          description: True when every outside call is refused, that is when a reason has scope `all`
+        numbersStopped:
+          type: boolean
+          description: True when phone system calls that show some of the organisation's numbers are refused, that is when a reason has scope `numbers`
+        at:
+          type: string
+          format: date-time
+          description: When the answer was worked out. It is kept for up to 15 seconds
+        reasons:
+          type: array
+          description: Every reason that applies. Left out of the answer for a reader who may not read the outbound policy
+          items:
+            type: object
+            properties:
+              code:
+                type: string
+                enum: [organisation_deactivated, charge_unpaid, emergency_record_rejected, balance_empty, destination_class, outside_hours, daily_spend_limit, monthly_spend_limit, calls_in_progress_limit, calls_per_minute_limit, outbound_policy_unavailable]
+              message:
+                type: string
+                description: One sentence for a person
+              scope:
+                type: string
+                enum: [all, numbers]
+                description: "`all`: every outside call is refused. `numbers`: only phone system calls that show the numbers in `numbers`"
+              state:
+                type: string
+                description: For `emergency_record_rejected`, the state of the numbers' emergency address record
+              numbers:
+                type: array
+                items:
+                  type: string
+                description: "For `emergency_record_rejected`, the numbers in that state, sorted, at most 20, as the phone number routes show them"
+              count:
+                type: integer
+                description: For `emergency_record_rejected`, how many of the organisation's numbers are in that state. Equal to `total` when no phone system call can go out, apart from 999 and 112
+              total:
+                type: integer
+                description: For `emergency_record_rejected`, how many numbers the organisation has
+              limit:
+                type: string
+                enum: [callsInProgress, callsPerMinute, spendPerDayMicros, spendPerMonthMicros]
+                description: For a limit reached, the policy field
+              value:
+                type: number
+                description: The limit that applies. Spend is in micros of a pound
+              current:
+                type: number
+                description: What it counts now
+              until:
+                type: string
+                format: date-time
+                description: For a spend limit, when its day or month ends in the policy's time zone
+      example:
+        blocked: true
+        numbersStopped: true
+        at: '2026-11-27T15:04:05.000Z'
+        reasons:
+          - code: emergency_record_rejected
+            message: Phone system calls that show these numbers are refused until their emergency address record is corrected. 999 and 112 still go out.
+            scope: numbers
+            state: rejected
+            numbers: ['442079460001']
+            count: 1
+            total: 3
+          - code: daily_spend_limit
+            message: "Today's spend on outside calls has reached its limit."
+            scope: all
+            limit: spendPerDayMicros
+            value: 50000000
+            current: 50120000
+            until: '2026-11-28T00:00:00.000Z'
     OrganisationOutboundPolicy:
       type: object
       properties:

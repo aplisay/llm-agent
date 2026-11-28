@@ -6,6 +6,7 @@ import {
   mergePolicy, aboveCeiling, effectivePolicy, periodsAt, outboundPolicyReady, DEFAULT_TIME_ZONE, POLICY_CODES,
 } from '../../../../lib/outbound-policy.js';
 import { brandCeiling, outboundUsage, outboundNotices } from '../../../../lib/outbound-authorisation.js';
+import { forgetOutboundNow } from '../../../../lib/outbound-now.js';
 
 const NOT_READY = {
   error: 'The outbound policy needs a database upgrade. Run tools/agent-admin.js upgrade-db, then restart the API server.',
@@ -105,6 +106,7 @@ export default function (logger) {
         await row.update({ outboundPolicy: policy }, { transaction });
         organisation.outboundPolicy = policy;
       });
+      forgetOutboundNow(organisation.id);
       logger.info({
         audit: 'organisation-outbound-policy-set',
         organisationId: organisation.id,
