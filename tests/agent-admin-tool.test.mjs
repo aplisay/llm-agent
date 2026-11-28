@@ -11,7 +11,7 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
   setupRealDatabase, teardownRealDatabase, databaseStarted,
-  Organisation, User, AuthKey, Call,
+  Organisation, User, AuthKey, Call, UsageRecord,
 } from './setup/database-test-wrapper.js';
 
 const TOOL = fileURLToPath(new URL('../tools/agent-admin.js', import.meta.url));
@@ -54,6 +54,7 @@ describe('tools/agent-admin.js', () => {
 
   afterAll(async () => {
     await Call.destroy({ where: { organisationId: orgId } });
+    await UsageRecord.destroy({ where: { organisationId: orgId } });
     await User.destroy({ where: { organisationId: orgId } });
     await Organisation.destroy({ where: { id: orgId } });
     rmSync(dir, { recursive: true, force: true });
@@ -95,6 +96,20 @@ describe('tools/agent-admin.js', () => {
       expect(await AuthKey.count()).toBe(before);
     }, 60000);
 
+    test('--email matches the whole address, ignoring case: % and _ in it match only themselves', async () => {
+      const other = await user('pzzqx');
+      const address = `p%q_-${stamp}@admin-tool.example.com`;
+      const key = `aat-key-${randomUUID()}`;
+      expect((await run('add-authkey', '--email', address, '--key', key)).code).toBe(1);
+      expect(await AuthKey.findOne({ where: { key } })).toBeNull();
+
+      const exact = await user('p%q_');
+      expect(exact.email).toBe(address);
+      expect((await run('add-authkey', '--email', address.toUpperCase(), '--key', key)).code).toBe(0);
+      expect((await AuthKey.findOne({ where: { key } })).userId).toBe(exact.id);
+      expect(await AuthKey.count({ where: { userId: other.id } })).toBe(0);
+    }, 60000);
+
     test('a --userId that matches nobody fails and makes no key', async () => {
       const key = `aat-key-${randomUUID()}`;
       const { code } = await run('add-authkey', '--userId', `aat-nobody-${stamp}`, '--key', key);
@@ -130,6 +145,24 @@ describe('tools/agent-admin.js', () => {
       expect(byEmail.code).toBe(0);
       expect(byEmail.stdout).toContain(joCall.id);
       expect(byEmail.stdout).not.toContain(ivyCall.id);
+    }, 60000);
+
+    test('--email matches the whole address, ignoring case: % and _ in it match only themselves', async () => {
+      const [other, exact] = [await user('kzzlx'), await user('k%l_')];
+      const [otherCall, exactCall] = [await call(other), await call(exact)];
+      const ledgerRow = (owner, detail) => UsageRecord.create({
+        organisationId: orgId, userId: owner.id, technology: 'tts', provider: 'aat', detail, unit: 'characters',
+        quantity: 10, finalised: true, sessionId: randomUUID(), meterKey: detail, createdAt: at('2001-02-03T10:00:30Z'),
+      });
+      await ledgerRow(other, `aat-other-${stamp}`);
+      await ledgerRow(exact, `aat-exact-${stamp}`);
+
+      const res = await run('usage', '--email', exact.email.toUpperCase(), ...period);
+      expect(res.code).toBe(0);
+      expect(res.stdout).toContain(exactCall.id);
+      expect(res.stdout).not.toContain(otherCall.id);
+      expect(res.stdout).toContain(`aat-exact-${stamp}`);
+      expect(res.stdout).not.toContain(`aat-other-${stamp}`);
     }, 60000);
   });
 });

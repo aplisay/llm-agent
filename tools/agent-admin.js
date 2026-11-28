@@ -92,6 +92,8 @@ async function main() {
   }
 
   const { Agent, User, Organisation, AuthKey, stopDatabase, databaseStarted, Op, Call, Sequelize, UsageRecord, InvocationLog } = (await import('../lib/database.js'));
+  // ILIKE with its wildcards escaped: the whole address, ignoring case.
+  const emailIs = (email) => ({ [Op.iLike]: String(email).replace(/[\\%_]/g, '\\$&') });
   await databaseStarted;
   started = stopDatabase;
   try {
@@ -137,7 +139,7 @@ async function main() {
         }
         let where = {};
         options.userId && (where.id = options.userId);
-        options.email && (where.email = { [Op.iLike]: options.email });
+        options.email && (where.email = emailIs(options.email));
 
         if (!(user = await User.findOne({ where }))) {
           throw new Error(`Can't find user: ${options.userId || options.email}`);
@@ -335,7 +337,7 @@ async function main() {
         else if (options.userId) {
           userInclude.where = { id: options.userId };
         } else if (options.email) {
-          userInclude.where = { email: { [Op.iLike]: options.email } };
+          userInclude.where = { email: emailIs(options.email) };
         }
         else {
           throw new Error('Must specify one of --orgId, --userId, or --email');
@@ -471,7 +473,7 @@ async function main() {
             if (options.orgId) usageWhere.organisationId = options.orgId;
             if (options.userId) usageWhere.userId = options.userId;
             if (options.email) {
-              const users = await User.findAll({ where: { email: { [Op.iLike]: options.email } }, attributes: ['id'] });
+              const users = await User.findAll({ where: { email: emailIs(options.email) }, attributes: ['id'] });
               usageWhere.userId = { [Op.in]: users.map(u => u.id) };
             }
             if (options.orgName) {
