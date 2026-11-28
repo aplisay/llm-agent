@@ -6,6 +6,7 @@ import { requirePermission, can } from '../../lib/auth/permissions.js';
 import { mintRegistrarUsername, mintRegistrarPassword } from '../../lib/utils/credentials.js';
 import { registrarRealm, REGISTRAR_PORT, REGISTRAR_TRANSPORT } from '../../lib/registrar-accounts.js';
 import { notADeviceLine } from '../../lib/pbx/line-accounts.js';
+import { internalErrorBody } from '../../lib/error-answers.js';
 
 let appParameters, log;
 
@@ -242,7 +243,7 @@ const phoneEndpointList = (async (req, res) => {
   }
   catch (err) {
     req.log.error(err, 'listing phone endpoints');
-    res.status(500).send(err);
+    res.status(500).send(internalErrorBody());
   }
 });
 

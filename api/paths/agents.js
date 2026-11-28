@@ -3,6 +3,7 @@ import { scopeWhereForUser } from '../../lib/scope.js';
 import { validateAgentTargets, AgentSetValidationError } from '../../lib/agent-set-labels.js';
 import { requirePermission } from '../../lib/auth/permissions.js';
 import { isModelAllowed, allowedModelsWhere } from '../../lib/auth/model-access.js';
+import { internalErrorBody } from '../../lib/error-answers.js';
 
 let appParameters, log;
 
@@ -53,7 +54,7 @@ const agentCreate = (async (req, res) => {
       res.status(400).send(err.errors.map((e) => e.message));
     }
     else {
-      res.status(500).send(err);
+      res.status(500).send(internalErrorBody());
     }
 
   }
@@ -240,7 +241,7 @@ const agentList = (async (req, res) => {
   }
   catch (err) {
     req.log.error(err, 'listing agents');
-    res.status(500).send(err);
+    res.status(500).send(internalErrorBody());
   }
 });
 agentList.apiDoc = {

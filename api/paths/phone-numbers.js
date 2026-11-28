@@ -1,6 +1,7 @@
 import { PhoneNumber, Op } from '../../lib/database.js';
 import { getTelephonyHandler, HANDLER_NAMES, TELEPHONY_HANDLER_NAMES } from '../../lib/handlers/index.js';
 import { requirePermission } from '../../lib/auth/permissions.js';
+import { internalErrorBody } from '../../lib/error-answers.js';
 
 // DEPRECATED: This endpoint is deprecated. Use /api/phone-endpoints instead.
 
@@ -56,7 +57,7 @@ const phoneNumberList = (async (req, res) => {
   }
   catch (err) {
     req.log.error(err, 'listing phone numbers');
-    res.status(500).send(err);
+    res.status(500).send(internalErrorBody());
   }
 });
 

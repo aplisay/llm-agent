@@ -1,6 +1,7 @@
 import { Agent, AgentSet } from '../../lib/database.js';
 import { scopeWhereForUser } from '../../lib/scope.js';
 import { requirePermission } from '../../lib/auth/permissions.js';
+import { internalErrorBody } from '../../lib/error-answers.js';
 import {
   validateSetLabels,
   fixupLabelReferences,
@@ -322,7 +323,7 @@ const agentSetList = async (req, res) => {
   }
   catch (err) {
     req.log.error(err, 'listing agent sets');
-    res.status(500).send(err);
+    res.status(500).send(internalErrorBody());
   }
 };
 

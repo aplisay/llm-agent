@@ -1,5 +1,6 @@
 import { Instance, Op } from '../../../../../lib/database.js';
 import { requirePermission } from '../../../../../lib/auth/permissions.js';
+import { errorBody } from '../../../../../lib/error-answers.js';
 
 let log;
 
@@ -36,7 +37,7 @@ const listenerDelete = async (req, res) => {
   }
   catch (err) {
     req.log.error(err, 'deleting instance');
-    res.status(404).send(err);
+    res.status(404).send(errorBody(err, `Listener with ID ${listenerId} not found`));
   }
 };
 
