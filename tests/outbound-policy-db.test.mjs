@@ -113,6 +113,12 @@ describe('the outbound policy of an organisation', () => {
       otherOwner: { id: `obp-other-${stamp}`, organisationId: orgs.other, role: 'owner' },
       plainOwner: { id: `obp-plainowner-${stamp}`, organisationId: orgs.plain, role: 'owner' },
       operator: { id: `obp-operator-${stamp}`, organisationId: null, role: 'superAdmin' },
+      support: { id: `obp-support-${stamp}`, organisationId: null, role: 'support' },
+      otherMember: { id: `obp-othermember-${stamp}`, organisationId: orgs.other, role: 'member' },
+      noOrganisation: { id: `obp-noorg-${stamp}`, organisationId: null, role: 'member' },
+      memberAgentOnly: {
+        id: `obp-agentonly-${stamp}`, organisationId: orgs.phone, role: 'member', _effectivePermissions: { agent: ['invoke'] },
+      },
     });
     app = express();
     app.use(express.json());
@@ -813,7 +819,7 @@ describe('the outbound policy of an organisation', () => {
       const before = await db.OutboundEvent.count({ where: { organisationId: orgs.phone } });
       const res = await read();
       expect(res.status).toBe(200);
-      expect(res.body).toEqual({ blocked: false, at: expect.any(String), reasons: [] });
+      expect(res.body).toEqual({ blocked: false, numbersStopped: false, at: expect.any(String), reasons: [] });
       expect(res.headers['cache-control']).toBe('private, max-age=15');
       expect(await db.OutboundEvent.count({ where: { organisationId: orgs.phone } })).toBe(before);
     });
@@ -879,10 +885,12 @@ describe('the outbound policy of an organisation', () => {
 
         const res = await read();
         expect(res.body.blocked).toBe(false);
+        expect(res.body.numbersStopped).toBe(true);
         expect(res.body.reasons).toEqual([{
           code: 'emergency_record_rejected', message: expect.any(String), scope: 'numbers',
           state: 'rejected', numbers: [number(2)], count: 1, total: 3,
         }]);
+        expect((await read('member')).body).toEqual({ blocked: false, numbersStopped: true, at: expect.any(String) });
 
         await db.PhoneNumber.update({ emergencyRecordState: 'rejected' }, { where: { organisationId: orgs.phone } });
         await Organisation.update({ balance: 0 }, { where: { id: orgs.phone } });
@@ -911,10 +919,36 @@ describe('the outbound policy of an organisation', () => {
       expect(fresh.body.reasons.map((r) => r.code)).toEqual(['calls_in_progress_limit']);
     });
 
-    test('an admin and an operator may read it; a member, another organisation and an organisation without the phone system may not', async () => {
-      expect((await read('admin')).status).toBe(200);
-      expect((await read('operator')).status).toBe(200);
-      expect((await read('member')).status).toBe(403);
+    test('the owner, an admin, support and an operator get the reasons', async () => {
+      await Organisation.update({ balance: 0 }, { where: { id: orgs.phone } });
+      for (const who of ['owner', 'admin', 'support', 'operator']) {
+        const res = await read(who);
+        expect({ who, status: res.status, codes: res.body.reasons?.map((r) => r.code) })
+          .toEqual({ who, status: 200, codes: ['balance_empty'] });
+      }
+    });
+
+    test('a member of the organisation gets only whether calls are blocked, with no reasons', async () => {
+      await Organisation.update({ balance: 0 }, { where: { id: orgs.phone } });
+      const res = await read('member');
+      expect(res.status).toBe(200);
+      expect(res.body).toEqual({ blocked: true, numbersStopped: false, at: expect.any(String) });
+      expect(res.headers['cache-control']).toBe('private, max-age=15');
+      expect((await read('member', orgs.phone, { keep: true })).body).toEqual(res.body);
+      expect((await read('owner', orgs.phone, { keep: true })).body.reasons).toHaveLength(1);
+    });
+
+    test('anyone else may not read it', async () => {
+      for (const [who, organisationId] of [
+        ['memberAgentOnly', orgs.phone],
+        ['otherMember', orgs.phone],
+        ['noOrganisation', orgs.phone],
+        ['member', orgs.other],
+        ['member', `obp-none-${stamp}`],
+      ]) {
+        const res = await read(who, organisationId);
+        expect({ who, organisationId, status: res.status }).toEqual({ who, organisationId, status: 403 });
+      }
       expect((await read('otherOwner')).status).toBe(404);
       const plain = await read('plainOwner', orgs.plain);
       expect(plain.status).toBe(403);

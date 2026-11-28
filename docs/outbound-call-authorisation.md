@@ -103,11 +103,10 @@ outside call is refused: `effective.hoursValid` is then false and
 **Is calling out blocked now?** `GET /api/organisations/{id}/outbound-policy/now`
 says whether an outside call would be refused at this moment, whatever number
 is dialled, and lists every reason that applies, for a banner. `notices` lists
-today's refusals, which do not always mean calls are refused now. Whoever may
-read the policy may read it.
+today's refusals, which do not always mean calls are refused now.
 
 ```json
-{ "blocked": true, "at": "2026-11-27T15:04:05.000Z",
+{ "blocked": true, "numbersStopped": true, "at": "2026-11-27T15:04:05.000Z",
   "reasons": [{ "code": "emergency_record_rejected", "message": "Phone system calls that show these numbers are refused until their emergency address record is corrected. 999 and 112 still go out.",
                 "scope": "numbers", "state": "rejected", "numbers": ["442079460001"], "count": 1, "total": 3 },
               { "code": "daily_spend_limit", "message": "Today's spend on outside calls has reached its limit.", "scope": "all",
@@ -118,8 +117,22 @@ Each reason has a `scope`. `all` means every outside call is refused.
 `numbers` means only phone system calls that show the numbers the reason names
 are refused. Calls that show the organisation's other numbers still go out, and
 so do an agent's calls, which do not say which number they show. `blocked` is
-true when a reason has scope `all`. So a page should show the reasons whenever
-the list is not empty, and use `blocked` to say whether any call can go out.
+true when a reason has scope `all`, and `numbersStopped` is true when a reason
+has scope `numbers`. So a page should show the reasons whenever the list is not
+empty, and use `blocked` to say whether any call can go out.
+
+Whoever may read the policy (`organisation:read` on the organisation) gets the
+whole answer. Anyone else of the organisation who has `phone:read`, such as a
+member, gets only `blocked`, `numbersStopped` and `at`:
+
+```json
+{ "blocked": false, "numbersStopped": true, "at": "2026-11-27T15:04:05.000Z" }
+```
+
+That is enough for a page to say "outside calls are blocked" or "some of your
+numbers cannot call out", with no reasons, numbers, counts or spend. Anyone of
+another organisation without `organisation:read` there gets 403, as does a
+reader with neither permission.
 
 The reasons, in the order a call meets them: `organisation_deactivated` and
 `charge_unpaid` (the phones make no calls but to 999 and 112),

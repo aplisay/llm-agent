@@ -3944,17 +3944,22 @@ components:
       type: object
       description: |-
         Whether an outside call by the organisation would be refused at this moment, and every reason why.
+        A reader who may not read the outbound policy, such as a member, gets only `blocked`, `numbersStopped` and `at`.
         See "Is calling out blocked now?" in docs/outbound-call-authorisation.md.
       properties:
         blocked:
           type: boolean
           description: True when every outside call is refused, that is when a reason has scope `all`
+        numbersStopped:
+          type: boolean
+          description: True when phone system calls that show some of the organisation's numbers are refused, that is when a reason has scope `numbers`
         at:
           type: string
           format: date-time
           description: When the answer was worked out. It is kept for up to 15 seconds
         reasons:
           type: array
+          description: Every reason that applies. Left out of the answer for a reader who may not read the outbound policy
           items:
             type: object
             properties:
@@ -3998,6 +4003,7 @@ components:
                 description: For a spend limit, when its day or month ends in the policy's time zone
       example:
         blocked: true
+        numbersStopped: true
         at: '2026-11-27T15:04:05.000Z'
         reasons:
           - code: emergency_record_rejected
