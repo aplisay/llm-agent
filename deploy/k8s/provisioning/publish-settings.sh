@@ -22,16 +22,22 @@ set -euo pipefail
 
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-# Every variable the service reads from the settings bundle. Nothing else of
-# the file reaches the pod.
-#   POSTGRES_*            the database, with its client certificate
+# Every variable the service takes from the settings file, by its exact name.
+# Nothing else of the file reaches the pod.
+#   POSTGRES_HOST, _PORT, _USER, _PASSWORD, _DB   the database
+#   POSTGRES_CA, _CERT, _KEY, _RO_SERVER_NAME     its TLS: the server's CA, the
+#                                                 client certificate and key,
+#                                                 the name on the server's
+#                                                 certificate
 #   CREDENTIALS_KEY       the phone's admin password is made from it
 #   PBX_REGISTRAR_DOMAIN  when a phone names another model, its lines are
 #   REGSERVER_REGISTRAR     worked out again and a new line takes this name
 #   PBX_RELEASE           which phone system features are on
 # Not in the list: NODE_ENV and PROV_* (the manifests set them), DB_FORCE_SYNC
-# (the pod runs with it unset), and every other line of the file.
-ONLY='POSTGRES_*,CREDENTIALS_KEY,PBX_REGISTRAR_DOMAIN,REGSERVER_REGISTRAR,PBX_RELEASE'
+# (the pod runs with it unset), the POSTGRES_POOL_* settings (the pod runs
+# with the defaults), and every other line of the file. A database setting
+# the service comes to read later must be added here by name.
+ONLY='POSTGRES_HOST,POSTGRES_PORT,POSTGRES_USER,POSTGRES_PASSWORD,POSTGRES_DB,POSTGRES_CA,POSTGRES_CERT,POSTGRES_KEY,POSTGRES_RO_SERVER_NAME,CREDENTIALS_KEY,PBX_REGISTRAR_DOMAIN,REGSERVER_REGISTRAR,PBX_RELEASE'
 
 ENVIRONMENT=""
 ARGS=()
