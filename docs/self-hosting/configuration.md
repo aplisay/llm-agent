@@ -95,7 +95,7 @@ Speech-to-text and text-to-speech for pipeline (STT, LLM, TTS) rows. Speech-to-s
 | `DEEPGRAM_API_KEY` | LiveKit, Pipecat |  | Deepgram key: speech-to-text on pipeline rows. Secret. |
 | `CARTESIA_API_KEY` | API, LiveKit, Pipecat |  | Cartesia key: text-to-speech, and the voice list. Secret. |
 | `NEUPHONIC_API_KEY` | API, LiveKit, Pipecat |  | Neuphonic key: text-to-speech, and the voice list. Secret. |
-| `GOOGLE_APPLICATION_CREDENTIALS` | API, LiveKit, Pipecat |  | Path to a Google service account JSON file: Google speech, Vertex AI and GCS recording storage. |
+| `GOOGLE_APPLICATION_CREDENTIALS` | API, LiveKit, Pipecat |  | Path to a Google service account JSON file: Google speech, Vertex AI and GCS recording storage. Unset, and not on Cloud Run, the API does not ask Google for its voice list. |
 | `GOOGLE_CREDENTIAL` | API, LiveKit, Pipecat |  | The Google service account JSON itself. At start the API and workers write it to the GOOGLE_APPLICATION_CREDENTIALS path if no file is there. Secret. |
 | `GOOGLE_APPLICATION_CREDENTIALS_JSON` | API, LiveKit, Pipecat |  | Same as GOOGLE_CREDENTIAL, read when GOOGLE_CREDENTIAL is unset. Secret. |
 | `GOOGLE_STT_LOCATION` | Pipecat | `global` | Google speech-to-text region on the Pipecat worker. |
@@ -389,7 +389,7 @@ You do not normally set these.
 | `LIVEKIT_WORKER_PREBUILT` | API |  | Set by the API image: the LiveKit registry is already built, so prestart skips the build. |
 | `HOSTNAME` | API |  | Host name, used to name this process in the database. |
 | `POD_NAME` | API |  | Kubernetes pod name, used in place of HOSTNAME. |
-| `K_SERVICE` | API, LiveKit, Pipecat |  | Set by Cloud Run. Counts as Google credentials when RECORDING_STORAGE_PATH is unset. |
+| `K_SERVICE` | API, LiveKit, Pipecat |  | Set by Cloud Run. Counts as Google credentials for the Google voice list, and for recording storage when RECORDING_STORAGE_PATH is unset. |
 | `TMPDIR` | LiveKit |  | Temporary directory. |
 | `SECRETENV_KEY` | API, LiveKit, Pipecat, sipbridge |  | Key for SECRETENV_BUNDLE. Optional: see docs/running.md. Secret. |
 | `SECRETENV_BUNDLE` | API, LiveKit, Pipecat, sipbridge |  | The whole environment, encrypted. Optional. Secret. |

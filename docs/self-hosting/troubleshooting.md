@@ -39,6 +39,7 @@ to paste into an issue.
 | `BOOTSTRAP_API_KEY` is set but the key does not work | The database already had a user when the server first saw the key. The setting only works on a database with no users | Make a key with `node tools/agent-admin.js add-authkey`, or start from an empty database |
 | `AUTHENTICATE_USERS=NO` has no effect | That mode was removed. Every request needs a key | Remove the line and use an API key |
 | `GET /api/models` does not list a model you expect | Its runtime is disabled, or the instance has no key for the provider | Look at `runtimes` and the provider lists in `GET /api/health` |
+| A vendor's voices are missing from the voice lists, or saving an agent fails with `this server has no voice list for ...` | The API server asks a vendor for its voice list only when it holds that vendor's key. A key that only a worker holds does not count | Set the variable the message names in the API server's environment. `speech` and `runtimes` in `GET /api/health` show what is missing. For Google, set `GOOGLE_APPLICATION_CREDENTIALS`: a credential file that `gcloud` left in the home folder is not used |
 
 ## Voice calls in the browser
 

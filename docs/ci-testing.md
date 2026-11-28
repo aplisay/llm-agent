@@ -108,6 +108,11 @@ When a test needs a vendor's answer:
   replace `fetch` in the test file and pass other URLs on.
   `tests/agent-model-entitlement.test.mjs` does this for one model call.
 
+To test that code makes no request at all, set `TEST_VENDOR_STAND_INS=off` and
+`TEST_NETWORK_LOG` in the test file before it loads `lib/`. A catalogue
+request then reaches the guard and is logged as a refusal.
+`tests/voices-no-key-no-call.test.mjs` does this.
+
 `agents/jambonz/tests` is not part of this suite. It tests against a live
 Jambonz and runs in the Jambonz image build.
 

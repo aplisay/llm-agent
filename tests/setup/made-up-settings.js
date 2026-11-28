@@ -39,6 +39,10 @@ export const madeUpSettings = {
   // With a project named, a Google client does not ask the Google metadata
   // server for one. firebase-admin did, for each token that is not an API key.
   GOOGLE_CLOUD_PROJECT: 'made-up-project',
+  // Names a file that does not exist. The server lists Google voices only with
+  // credentials configured (the voice client is a test double), and a real
+  // Google client that looks for credentials fails at once on this path.
+  GOOGLE_APPLICATION_CREDENTIALS: path.join(os.tmpdir(), 'aplisay-test-no-such-google-credential.json'),
   // Unset, a machine that holds Google credentials records to a real bucket
   // (recordingStorageConfig in lib/recording/storage.js).
   RECORDING_STORAGE_PATH: `file://${path.join(os.tmpdir(), 'aplisay-test-recordings')}`,
@@ -47,7 +51,6 @@ export const madeUpSettings = {
 // Removed, so that no Google client finds a real service account, and so that
 // the older or optional forms of a setting do not differ between machines.
 export const removedSettings = [
-  'GOOGLE_APPLICATION_CREDENTIALS',
   'GOOGLE_CREDENTIAL',
   'GOOGLE_APPLICATION_CREDENTIALS_JSON',
   'GROK_API_KEY',

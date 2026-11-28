@@ -61,6 +61,20 @@ describe('configuration status', () => {
     }
   });
 
+  test('a vendor whose voice list is not asked for is reported with the same missing settings', async () => {
+    const { VOICE_LIST_NEEDS, voiceListMissing } = await import('../lib/voices/list-needs.js');
+    const status = await configStatus({ env: {} });
+    for (const [vendor, needs] of Object.entries(VOICE_LIST_NEEDS)) {
+      const row = [...status.speech, ...status.runtimes].find((r) => r.name === vendor);
+      expect({ vendor, enabled: row?.enabled, missing: row?.missing }).toEqual({ vendor, enabled: false, missing: needs });
+      expect(voiceListMissing(vendor, {})).toEqual(needs);
+    }
+    // On Cloud Run the Google list is read with the service's own identity.
+    const cloudRun = await configStatus({ env: { K_SERVICE: 'llm-agent' } });
+    expect(cloudRun.speech.find((r) => r.name === 'google')).toMatchObject({ enabled: true, missing: [] });
+    expect(formatStatus(status)).toMatch(/google\s+disabled\s+missing GOOGLE_APPLICATION_CREDENTIALS/);
+  });
+
   test('names the variables a disabled runtime is missing, and never a value', async () => {
     const secret = 'value-that-must-not-appear-1234';
     const status = await configStatus({ env: { LIVEKIT_URL: 'wss://lk.example', LIVEKIT_API_KEY: secret } });
