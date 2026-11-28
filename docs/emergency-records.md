@@ -61,7 +61,7 @@ It prints the key once. Give it to the sending service and store it nowhere else
 
 The service has one key. A second run of the script stops and changes nothing. To replace the key, run it with `--rotate`: it prints a new key and deletes the old one, which stops working at once.
 
-No other route gives a record. The internal routes that send a whole number row to the workers leave it out, and so does an agent read with its listeners' numbers.
+No other route gives every organisation's records. An organisation's own users read the records of their own numbers through two more routes: see [for an organisation's own users](#for-an-organisations-own-users). The internal routes that send a whole number row to the workers leave the record out, and so does an agent read with its listeners' numbers.
 
 ## The routes
 
@@ -167,14 +167,74 @@ The rule is in the [outbound authorisation](outbound-call-authorisation.md), for
 
 The outbound authorisation is not a way to place an emergency call. Asked about 999 or 112, it answers as it did before this rule: on a platform trunk it refuses the destination with `invalid_destination`. This rule is not applied to those two numbers, so `emergency_record_rejected` is never the answer for them.
 
+## For an organisation's own users
+
+Two routes let an organisation see the records of its own numbers, and choose which address each should hold. They send nothing to a carrier.
+
+### Who may do what
+
+| Caller | Reads | Sets |
+|---|---|---|
+| A member | The state of each record: `number`, `mode`, `state`, `stateSince`, `submittedAt`, `checkedAt` and `stopsCalls`. No address, and none of the carrier's words | No |
+| An owner, an organisation admin | All of it, with the addresses | Yes |
+| Support | All of it, for an organisation it names with `?organisationId=` | No |
+| A platform operator | All of it, for an organisation it names | Yes |
+| A service key, the workers' token, the call control token | Nothing: 403 | No |
+
+- Reading needs `phoneEndpoint:read`. The addresses and the carrier's words are added for a caller with `organisation:read`. A number's own address can be a person's home.
+- Setting needs `organisation:update`, as the organisation's own address does.
+- Another organisation's number answers 404, as a number with no record does.
+- An organisation without the phone system answers 403 `phone_system_disabled`.
+
+### `GET /emergency-addresses` and `GET /emergency-addresses/{number}`
+
+The list answers `{ "items": [...] }`, in number order, with no paging. It has only the numbers that have a record here: see [which numbers have a record here](#which-numbers-have-a-record-here). The other route gives one item.
+
+| Field | Meaning |
+|---|---|
+| `number` | The number, in digits with its country code and no `+` |
+| `mode` | Which address the record should hold: `organisation` or `own` |
+| `state`, `stateSince`, `submittedAt`, `checkedAt` | As in [the record](#the-record) |
+| `stopsCalls` | True when calls out that show the number are stopped because of the record's state. Emergency calls are never stopped |
+| `address` | The address in force. Null when there is none |
+| `addressSummary` | The address in force on one line: its name, building, street and postcode |
+| `ownAddress` | The number's own address, also while the organisation's is in force. Null when it has none |
+| `sent` | What the carrier last took. It may be in the carrier's short forms, so a page that shows "a change is waiting" must apply the same short forms to `address` before it compares the two |
+| `code`, `reason`, `error`, `errorAt` | As in the record |
+
+### `PUT /emergency-addresses/{number}`
+
+Body: `{ "mode": "own", "address": { "name": "...", "thoroughfare": "...", "postcode": "..." } }`. Send `mode`, `address`, or both. The answer is the record after the change.
+
+- `mode` is `organisation` or `own`. `carrier` is refused with `mode_not_allowed`: a number that has a record here is at the platform's carrier.
+- `address` is the number's own address. Its fields are `name`, `premises`, `thoroughfare`, `locality`, `postcode` and `businessSuffix`. It needs a name, a postcode, and a street or a building (`thoroughfare` or `premises`), as the organisation's address does. Other fields are dropped. Null removes the address.
+- A number in mode `own` must have an address of its own: `address_required`.
+- The number's own address is kept when its mode goes back to `organisation`.
+
+| Status | When |
+|---|---|
+| 200 | Set |
+| 400 | `invalid_request`, `invalid_address`, `address_required` or `mode_not_allowed`. A value of the wrong type is refused by the request check, with no `code` |
+| 403 | The caller may not set it, or the organisation does not have the phone system |
+| 404 | The organisation has no record for that number |
+
+**What a change does.** It changes which address is in force, and nothing else. Nothing is sent. The state is not moved: it describes the carrier's record, which is still the older one. The record's [version](#the-version) changes, and the address in force now differs from `sent`. That is how the sending service finds a record to send on its next run. A send that read the record before the change is refused its claim with 409 `changed`.
+
+- Until the service has sent the record again, a rejected record stays `rejected`, and calls out that show the number stay stopped.
+- A change made while a send holds the number is kept, and so is the send's result. The record then says `submitted` with the older address in `sent`, and the newer one waits.
+- A change to the organisation's own address (`PUT /organisations/{id}/phone-system`) does the same for every number in mode `organisation`.
+- An emergency plan is never touched by a change. A call to 999 or 112 from a line gets the same plan before and after.
+
+**Sending a rejected record again, with the same address, is not here.** It is not a change of state. The sending service sends a record when the address in force differs from what was sent, and for such a record it does not. The service itself may claim and send any record at any time: `rejected` to `submitted` is one of the changes its key may make.
+
 ## The database upgrade
 
-The routes need the schema 81 upgrade (`tools/agent-admin.js upgrade-db`, see [upgrading](self-hosting/upgrading.md)), which adds nine columns to `phone_numbers`, and then a restart of the API server. Until both are done the four routes answer 503 `emergency_records_not_ready`, and everything else works as before.
+The routes need the schema 81 upgrade (`tools/agent-admin.js upgrade-db`, see [upgrading](self-hosting/upgrading.md)), which adds nine columns to `phone_numbers`, and then a restart of the API server. Until both are done the four routes of the sending service and the two for an organisation's own users answer 503 `emergency_records_not_ready`, and everything else works as before.
 
 The rule for calls out needs only the phone system upgrade (schema 73), which has the state.
 
 ## Not here yet
 
-- A route for an organisation's admin to set a number's mode and its own address, and to read its record.
+- A way for an organisation's admin to have a rejected record sent again with the same address.
 - Notices to an organisation's admins when a record is rejected.
 - A note on a number that the carrier may still hold an earlier holder's address.

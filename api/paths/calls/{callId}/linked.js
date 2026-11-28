@@ -2,6 +2,7 @@ import { Call, Agent, Op } from '../../../../lib/database.js';
 import { visibleCallsWhere } from '../../../../lib/call-visibility.js';
 import { requirePermission } from '../../../../lib/auth/permissions.js';
 import { notRedacted } from '../../../../lib/redacted-calls.js';
+import { PBX_FACTS_COLUMN, withPbxFacts } from '../../../../lib/pbx/call-facts.js';
 
 // Safety caps: a single call's transfer chain is small in practice.
 const MAX_LINKED = 50;   // total legs returned
@@ -54,7 +55,7 @@ export default function (logger) {
 
       // 2. Collect root + all descendants (BFS down via parentId), bounded.
       const attributes = ['id', 'parentId', 'instanceId', 'agentId', 'modelName',
-        'callerId', 'calledId', 'startedAt', 'endedAt', 'status'];
+        'callerId', 'calledId', 'startedAt', 'endedAt', 'status', PBX_FACTS_COLUMN];
       const include = [{ model: Agent, attributes: ['id', 'name', 'label'], required: false }];
       const collected = new Map();
       let frontier = [root.id];
@@ -71,7 +72,7 @@ export default function (logger) {
       }
 
       res.send({
-        calls: [...collected.values()].map((c) => ({
+        calls: [...collected.values()].map((c) => withPbxFacts({
           id: c.id,
           parentId: c.parentId,
           instanceId: c.instanceId,
@@ -84,6 +85,7 @@ export default function (logger) {
           startedAt: c.startedAt,
           endedAt: c.endedAt,
           status: c.status,
+          pbxFacts: c.get('pbxFacts'),
         })),
       });
     } catch (error) {

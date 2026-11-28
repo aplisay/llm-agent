@@ -30,6 +30,17 @@
 #   ./bundle-secretenv.sh --env=production --file=path/to/.env
 #   ./bundle-secretenv.sh --dry-run             # plan only, no writes
 #
+# --only=<names> bundles only the named variables of the file, for a service
+# that reads only some of them. Comma-separated; a name ending in _* takes
+# every variable with that prefix:
+#   ./bundle-secretenv.sh --env=staging --target=k8s --only='POSTGRES_*,CREDENTIALS_KEY' \
+#       --k8s-secret=<name> --k8s-namespace=<namespace>
+# It works with the Kubernetes target only, and needs a Secret name of its own
+# (--k8s-secret). The default names of both targets hold the bundle of the
+# whole file, and --only does not write to them.
+# It prints the names it bundled, never a value. It needs the repo's
+# node_modules (yarn install).
+#
 # Requirements:
 #   - gcloud (gcp target) / kubectl (k8s target), openssl (key), node (+ npx)
 #   - the encryption uses the repo's local `secretenv` (node_modules) when
@@ -51,10 +62,14 @@ ENV_FILE=""
 TARGET="gcp"
 ASSUME_YES=0
 DRY_RUN=0
+ONLY=""
+ONLY_GIVEN=0
 
 # k8s target details (defaults match deploy/k8s/beta).
 K8S_NAMESPACE="llm-agent"
-K8S_SECRET_NAME="llm-agent-secretenv"
+DEFAULT_K8S_SECRET_NAME="llm-agent-secretenv"
+K8S_SECRET_NAME="$DEFAULT_K8S_SECRET_NAME"
+K8S_SECRET_GIVEN=0
 # Empty = derive from the environment (see "k8s cluster binding" below); set by
 # --k8s-context for a cluster this script knows nothing about.
 K8S_CONTEXT=""
@@ -68,14 +83,16 @@ while [ $# -gt 0 ]; do
         --file)      ENV_FILE="${2:-}"; shift 2 ;;
         --target=*|--backend=*) TARGET="${1#*=}"; shift ;;
         --target|--backend)     TARGET="${2:-}"; shift 2 ;;
-        --k8s-secret=*)    K8S_SECRET_NAME="${1#*=}"; shift ;;
-        --k8s-secret)      K8S_SECRET_NAME="${2:-}"; shift 2 ;;
+        --k8s-secret=*)    K8S_SECRET_NAME="${1#*=}"; K8S_SECRET_GIVEN=1; shift ;;
+        --k8s-secret)      K8S_SECRET_NAME="${2:-}"; K8S_SECRET_GIVEN=1; shift 2 ;;
         --k8s-namespace=*) K8S_NAMESPACE="${1#*=}"; shift ;;
         --k8s-namespace)   K8S_NAMESPACE="${2:-}"; shift 2 ;;
         --k8s-deployment=*) K8S_DEPLOYMENT="${1#*=}"; shift ;;
         --k8s-deployment)   K8S_DEPLOYMENT="${2:-}"; shift 2 ;;
         --k8s-context=*)   K8S_CONTEXT="${1#*=}"; shift ;;
         --k8s-context)     K8S_CONTEXT="${2:-}"; shift 2 ;;
+        --only=*)  ONLY="${1#*=}"; ONLY_GIVEN=1; shift ;;
+        --only)    ONLY="${2:-}"; ONLY_GIVEN=1; shift 2 ;;
         --yes|-y)  ASSUME_YES=1; shift ;;
         --dry-run) DRY_RUN=1; shift ;;
         -h|--help)
@@ -90,6 +107,30 @@ case "$TARGET" in
     gcp|k8s) ;;
     *) echo -e "${RED}Invalid target '$TARGET' (use gcp|k8s)${NC}" >&2; exit 2 ;;
 esac
+
+# ---- --only: a bundle of some variables gets a name of its own ---------------
+#
+# The default names of both targets hold the bundle of the whole file. A
+# bundle of some of its variables is never written to them. These checks come
+# before anything is read or asked.
+if [ "$ONLY_GIVEN" = 1 ]; then
+    if [ -z "$ONLY" ]; then
+        echo -e "${RED}--only needs a list of names, for example --only='POSTGRES_*,CREDENTIALS_KEY'.${NC}" >&2
+        exit 2
+    fi
+    if [ "$TARGET" = gcp ]; then
+        echo -e "${RED}--only works with --target=k8s only. Secret Manager has one pair of names for each environment, and it holds the bundle of the whole file.${NC}" >&2
+        exit 2
+    fi
+    if [ "$K8S_SECRET_GIVEN" != 1 ] || [ -z "$K8S_SECRET_NAME" ]; then
+        echo -e "${RED}--only needs --k8s-secret=<name>: a Secret of its own for this bundle.${NC}" >&2
+        exit 2
+    fi
+    if [ "$K8S_SECRET_NAME" = "$DEFAULT_K8S_SECRET_NAME" ]; then
+        echo -e "${RED}--only does not write to $DEFAULT_K8S_SECRET_NAME: that Secret holds the bundle of the whole file. Give --k8s-secret another name.${NC}" >&2
+        exit 2
+    fi
+fi
 
 # ---- Environment -------------------------------------------------------------
 
@@ -121,7 +162,8 @@ if [ ! -f "$ENV_FILE" ]; then
 fi
 
 # Don't bundle our own SECRETENV_* lines back in (circular at decrypt time).
-if grep -qE '^(export[[:space:]]+)?SECRETENV_(KEY|BUNDLE)=' "$ENV_FILE"; then
+# With --only they are never bundled, so there is nothing to warn about.
+if [ -z "$ONLY" ] && grep -qE '^(export[[:space:]]+)?SECRETENV_(KEY|BUNDLE)=' "$ENV_FILE"; then
     echo -e "${YELLOW}Warning: $ENV_FILE contains a SECRETENV_KEY/_BUNDLE line; it will be encrypted into the new bundle. Remove it if you meant it as the active pair.${NC}" >&2
 fi
 
@@ -197,6 +239,7 @@ else
     echo -e "  Target:       ${GREEN}Kubernetes${NC} (context ${GREEN}$K8S_CONTEXT${NC})"
     echo -e "  Secret:       ${GREEN}$K8S_SECRET_NAME${NC} in namespace ${GREEN}$K8S_NAMESPACE${NC}"
 fi
+[ -n "$ONLY" ] && echo -e "  Only:         ${GREEN}$ONLY${NC}"
 [ "$DRY_RUN" = 1 ] && echo -e "  Mode:         ${YELLOW}DRY RUN (no writes)${NC}"
 echo
 
@@ -216,6 +259,12 @@ export SECRETENV_KEY
 
 encrypt_bundle() {
     local file="$1"
+    if [ -n "$ONLY" ]; then
+        # Its stderr is kept: it lists the names it bundled, never a value.
+        [ -d "$REPO_ROOT/node_modules/Odotenv" ] || { echo -e "${RED}--only needs the repo's node_modules (run yarn install).${NC}" >&2; exit 3; }
+        node "$SCRIPT_DIR/secretenv-subset.cjs" "$file" "$ONLY"
+        return
+    fi
     # package.json installs secretenv under the name dotenv.
     if [ -f "$REPO_ROOT/node_modules/dotenv/bin/secretenv.js" ]; then
         node "$REPO_ROOT/node_modules/dotenv/bin/secretenv.js" -p "$file" -e 2>/dev/null

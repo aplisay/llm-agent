@@ -33,8 +33,11 @@ const { phoneSystemReady, requirePhoneSystem } = await import('../lib/capabiliti
 const { directoryContext } = await import('../lib/pbx/route-helpers.js');
 const { resolveRequest } = await import('../lib/pbx/resolve.js');
 const { addEvents } = await import('../lib/pbx/call-records.js');
+const { default: linesRoute } = await import('../api/paths/agent-db/pbx/lines.js');
 const { default: capabilitiesRoute } = await import('../api/paths/organisations/{organisationId}/capabilities.js');
 const { default: phoneSystemRoute } = await import('../api/paths/organisations/{organisationId}/phone-system.js');
+const { default: addressesRoute } = await import('../api/paths/emergency-addresses.js');
+const { default: addressRoute } = await import('../api/paths/emergency-addresses/{number}.js');
 
 const logger = { info() {}, error() {}, debug() {}, warn() {} };
 const operator = { id: 'u-op', role: 'superAdmin' };
@@ -83,6 +86,17 @@ describe('with the phone system off', () => {
     expect(read.statusCode).toBe(503);
   });
 
+  test('the emergency address routes answer 503, not 403', async () => {
+    const params = { number: '442071234567' };
+    for (const res of [
+      await call(addressesRoute(logger).GET),
+      await call(addressRoute(logger).GET, { params }),
+      await call(addressRoute(logger).PUT, { params, body: { mode: 'organisation' } }),
+    ]) {
+      expect({ status: res.statusCode, code: res.body.code }).toEqual({ status: 503, code: 'phone_system_not_ready' });
+    }
+  });
+
   test('call control: a number that rings an agent still resolves', async () => {
     const plan = await resolveRequest({ kind: 'number', calledNumber: '+442071234567', trunkId: 't1' });
     expect(plan).toMatchObject({ action: 'agent', organisationId: 'o1' });
@@ -95,5 +109,11 @@ describe('with the phone system off', () => {
       .rejects.toMatchObject({ status: 503, code: 'phone_system_not_ready' });
     await expect(addEvents('c1', [{ id: '00000000-0000-4000-8000-000000000001', type: 'ringing', at: new Date().toISOString() }]))
       .rejects.toMatchObject({ status: 503, code: 'phone_system_not_ready' });
+  });
+
+  test('call control: the list of lines answers 503', async () => {
+    const res = makeRes();
+    await linesRoute(logger).GET({ originalUrl: '/api/agent-db/pbx/lines', log: logger }, res);
+    expect({ status: res.statusCode, code: res.body.code }).toEqual({ status: 503, code: 'phone_system_not_ready' });
   });
 });

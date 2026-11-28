@@ -137,7 +137,7 @@ describe('who sees calls', () => {
       res.locals.user = users[req.headers['x-test-user']];
       next();
     });
-    for (const file of ['calls.js', 'calls/{callId}.js', 'calls/{callId}/linked.js', 'calls/{callId}/logs.js', 'calls/{callId}/recording.js', 'calls/{callId}/invocation-log.js']) {
+    for (const file of ['calls.js', 'calls/{callId}.js', 'calls/{callId}/linked.js', 'calls/{callId}/events.js', 'calls/{callId}/logs.js', 'calls/{callId}/recording.js', 'calls/{callId}/invocation-log.js']) {
       await import(`../api/paths/${file}`);
     }
     await openapi.initialize({
@@ -145,7 +145,7 @@ describe('who sees calls', () => {
       apiDoc: yaml.load(fs.readFileSync('./api/api-doc.yaml', 'utf8')),
       dependencies: { logger: log, voices: {}, wsServer: {} },
       paths: './api/paths',
-      routesGlob: '{calls.js,calls/{callId}.js,calls/{callId}/{linked,logs,recording,invocation-log}.js}',
+      routesGlob: '{calls.js,calls/{callId}.js,calls/{callId}/{linked,events,logs,recording,invocation-log}.js}',
       promiseMode: true,
       errorMiddleware: (err, req, res, next) => res.status(err.status || 500).json(err),
     });
@@ -239,6 +239,56 @@ describe('who sees calls', () => {
     });
   });
 
+  describe('what a call read shows of a phone system call', () => {
+    test('GET /calls/{id} gives the listed facts of metadata.pbx, and nothing else stored there', async () => {
+      const call = await pbxCall({ callerId: '201', calledId: '999' }, {
+        direction: 'emergency', extensionNumber: '201', presentNumber: '+442079460100', addressState: 'accepted', numberFrom: 'plan',
+        fromLineNumber: 1, engine: 'engine-1', planId: 'plan-1', sourceAddress: '192.0.2.10', extensionName: { nested: true },
+      });
+      await end(call, true, 'callee_hangup');
+      const res = await get('owner', `/calls/${call.id}`);
+      expect(res.status).toBe(200);
+      expect(res.body.metadata).toEqual({
+        pbx: {
+          direction: 'emergency', extensionNumber: '201', presentNumber: '+442079460100', addressState: 'accepted', numberFrom: 'plan',
+          fromLineNumber: 1, endReason: 'callee_hangup', answered: true,
+        },
+      });
+    });
+
+    test('the list and /linked give them for the call and its leg, to the party who answered', async () => {
+      const item = (await get('alice', '/calls?limit=500')).body.calls.find((c) => c.id === calls.toAlice.id);
+      expect(item.metadata.pbx).toMatchObject({ direction: 'in', extensionNumber: '201', endReason: 'caller_hangup', answered: true });
+      const linked = (await get('alice', `/calls/${calls.toAliceLeg.id}/linked`)).body.calls;
+      const leg = linked.find((c) => c.id === calls.toAliceLeg.id);
+      expect(leg.metadata.pbx).toMatchObject({ kind: 'line', endReason: 'hangup', answered: true });
+      expect(linked.find((c) => c.id === calls.toAlice.id).metadata.pbx).toMatchObject({ direction: 'in' });
+    });
+
+    test('a call out of sight gives nothing, and an agent call has no metadata', async () => {
+      expect((await get('bob', `/calls/${calls.toAlice.id}`)).status).toBe(404);
+      await Call.update({ metadata: { aplisay: { note: 'kept' } } }, { where: { id: calls.agent.id } });
+      const agentCall = await get('owner', `/calls/${calls.agent.id}`);
+      expect(agentCall.status).toBe(200);
+      expect(agentCall.body).not.toHaveProperty('metadata');
+      const item = (await get('owner', '/calls?limit=500')).body.calls.find((c) => c.id === calls.agent.id);
+      expect(item).not.toHaveProperty('metadata');
+    });
+
+    test('a deleted call has no metadata', async () => {
+      const call = await pbxCall({}, { direction: 'in', extensionNumber: '201' });
+      await end(call, false, 'no_answer');
+      const { redactCallTree, SETTLE_MS } = await import('../lib/call-redaction.js');
+      const result = await redactCallTree({
+        callId: call.id, scope: { organisationId: ORG }, now: new Date(Date.now() + SETTLE_MS + 60_000), deleteRecordingObject: async () => {},
+      });
+      expect(result.outcome).toBe('redacted');
+      const item = (await get('owner', '/calls?limit=500&redacted=include')).body.calls.find((c) => c.id === call.id);
+      expect(item.redactedAt).toBeTruthy();
+      expect(item).not.toHaveProperty('metadata');
+    });
+  });
+
   describe('one call, its tree, its transcript and its recording follow the same rule', () => {
     test('GET /calls/{id}', async () => {
       expect((await get('alice', `/calls/${calls.toAlice.id}`)).status).toBe(200);
@@ -279,6 +329,71 @@ describe('who sees calls', () => {
       expect(bob.body.error).toBe('Call not found');
       expect((await request(server).delete(`/api/calls/${calls.toAlice.id}/recording`).set('x-test-user', 'bobDeletes')).status).toBe(404);
       expect((await Call.findByPk(calls.toAlice.id)).recordingId).toBe('test/recording.enc');
+    });
+  });
+
+  describe("a call's events follow the same rule", () => {
+    const T0 = Date.parse('2026-11-27T10:00:00Z');
+    const event = (type, seconds, data) => ({ id: randomUUID(), type, at: new Date(T0 + seconds * 1000).toISOString(), data });
+    const events = (user, call) => get(user, `/calls/${call.id}/events`);
+
+    beforeAll(async () => {
+      // Sent out of order, as call control may send them.
+      await records.addEvents(calls.salesBob.id, [
+        event('leg_answered', 5, { legId: 'plan-leg-2', kind: 'line', phoneLabel: 'Bob desk', lineNumber: 1 }),
+        event('leg_rang', 0, { legId: 'plan-leg-1', kind: 'line', phoneLabel: 'Alice desk', lineNumber: 1, key: 2, future: 'x' }),
+        event('leg_rang', 1, { legId: 'plan-leg-2', kind: 'line', phoneLabel: 'Bob desk', lineNumber: 1 }),
+        event('leg_not_answered', 6, { legId: 'plan-leg-1', kind: 'line', phoneLabel: 'Alice desk', reason: 'answered_elsewhere' }),
+        event('hold', 10, { party: 'caller', leg: 'engine-leg-9' }),
+        event('recording_notice_failed', 3, { error: 'the engine said no', try: 1 }),
+        event('recording_stopped', 20, { tracks: 2, omittedLegs: ['engine-leg-9'] }),
+      ]);
+    });
+
+    test('the owner and the party who answered get them oldest first, with only the listed data', async () => {
+      const expected = [
+        { type: 'leg_rang', data: { kind: 'line', phoneLabel: 'Alice desk', lineNumber: 1, key: 2 } },
+        { type: 'leg_rang', data: { kind: 'line', phoneLabel: 'Bob desk', lineNumber: 1 } },
+        { type: 'recording_notice_failed', data: { try: 1 } },
+        { type: 'leg_answered', data: { kind: 'line', phoneLabel: 'Bob desk', lineNumber: 1 } },
+        { type: 'leg_not_answered', data: { kind: 'line', phoneLabel: 'Alice desk', reason: 'answered_elsewhere' } },
+        { type: 'hold', data: { party: 'caller' } },
+        { type: 'recording_stopped', data: { tracks: 2 } },
+      ];
+      for (const user of ['owner', 'bob']) {
+        const res = await events(user, calls.salesBob);
+        expect([user, res.status]).toEqual([user, 200]);
+        expect(res.body.events.map(({ type, data }) => ({ type, data }))).toEqual(expected);
+        expect(res.body.events[0]).toEqual({ id: expect.any(String), type: 'leg_rang', at: new Date(T0).toISOString(), data: expected[0].data });
+      }
+    });
+
+    test('another person, a login with no person and another organisation get 404', async () => {
+      for (const user of ['alice', 'carol', 'stranger']) {
+        const res = await events(user, calls.salesBob);
+        expect([user, res.status]).toEqual([user, 404]);
+        expect(res.body).not.toHaveProperty('events');
+      }
+    });
+
+    test('a deleted call gives nothing', async () => {
+      const call = await pbxCall({}, { direction: 'in', extensionNumber: '201' });
+      await records.addEvents(call.id, [event('leg_rang', 0, { kind: 'line' })]);
+      await end(call, false, 'no_answer');
+      expect((await events('owner', call)).body.events).toHaveLength(1);
+      const { redactCallTree, SETTLE_MS } = await import('../lib/call-redaction.js');
+      const result = await redactCallTree({
+        callId: call.id, scope: { organisationId: ORG }, now: new Date(Date.now() + SETTLE_MS + 60_000), deleteRecordingObject: async () => {},
+      });
+      expect(result.outcome).toBe('redacted');
+      expect((await events('owner', call)).status).toBe(404);
+      expect(await db.CallEvent.count({ where: { callId: call.id } })).toBe(0);
+    });
+
+    test('an agent call has none, and an id that is not a call gets 404', async () => {
+      expect((await events('owner', calls.agent)).body).toEqual({ events: [] });
+      expect((await get('owner', '/calls/not-a-call/events')).status).toBe(404);
+      expect((await get('owner', `/calls/${randomUUID()}/events`)).status).toBe(404);
     });
   });
 

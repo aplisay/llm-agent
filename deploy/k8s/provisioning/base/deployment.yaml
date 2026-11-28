@@ -1,0 +1,124 @@
+# The desk phone provisioning service. See docs/phone-provisioning.md.
+#
+# It needs three things that are not made here, and the pod waits for each:
+#   - Secret provisioning-secretenv: the service's own settings bundle
+#     (POSTGRES_*, CREDENTIALS_KEY and three more). ../publish-settings.sh
+#     writes it.
+#   - Secret provisioning-tls: the certificate of the public host name. The
+#     target's cert-manager Certificate makes it.
+#   - The database upgrade (tools/agent-admin.js upgrade-db). Without it the
+#     process exits at start.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: provisioning
+  labels:
+    app.kubernetes.io/name: provisioning
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: provisioning
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: provisioning
+    spec:
+      automountServiceAccountToken: false
+      terminationGracePeriodSeconds: 20
+      securityContext:
+        runAsNonRoot: true
+        # The image's `node` user. A name cannot be checked against
+        # runAsNonRoot, so the id is given.
+        runAsUser: 1000
+        runAsGroup: 1000
+        # Lets that user read the key file, which is not world-readable below.
+        fsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: provisioning
+          image: europe-west1-docker.pkg.dev/llm-voice/containers/llm-agent/llm-agent:latest
+          imagePullPolicy: Always
+          command: ["node", "provisioning.mjs"]
+          envFrom:
+            - configMapRef:
+                name: provisioning-config
+            # SECRETENV_KEY and SECRETENV_BUNDLE. The process decrypts the
+            # bundle at start, and a value in the bundle replaces one of the
+            # same name from the ConfigMap.
+            - secretRef:
+                name: provisioning-secretenv
+          ports:
+            - name: https
+              containerPort: 4010
+              protocol: TCP
+          # Start-up waits its turn for the database's start-up lock, so give
+          # it two minutes. The kubelet sends no certificate and does not
+          # check ours. /health needs neither.
+          startupProbe:
+            httpGet:
+              path: /health
+              port: https
+              scheme: HTTPS
+            periodSeconds: 3
+            failureThreshold: 40
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: https
+              scheme: HTTPS
+            periodSeconds: 10
+            failureThreshold: 2
+          # Fails when /health does not answer, or when the certificate the
+          # service presents is not the one on disk for three checks running.
+          # A build that loads a renewed certificate by itself fails two
+          # checks at most, so a renewal does not restart it. A build that
+          # does not is restarted here, which loads it. Do not swap this for a
+          # plain httpGet probe while a build without the reload can still
+          # run: it would serve its old certificate until that expires.
+          livenessProbe:
+            exec:
+              command:
+                - node
+                - -e
+                - |
+                  const wanted = new (require("crypto").X509Certificate)(require("fs").readFileSync(process.env.PROV_TLS_CERT_FILE)).fingerprint256;
+                  require("https").get({ host: "127.0.0.1", port: process.env.PROV_PORT, path: "/health", rejectUnauthorized: false, timeout: 4000 }, (res) => {
+                    const served = res.socket.getPeerX509Certificate().fingerprint256;
+                    process.exit(res.statusCode === 200 && served === wanted ? 0 : 1);
+                  }).on("timeout", () => process.exit(1)).on("error", () => process.exit(1));
+            periodSeconds: 60
+            timeoutSeconds: 10
+            failureThreshold: 3
+          resources:
+            requests:
+              cpu: 50m
+              memory: 256Mi
+            limits:
+              memory: 768Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            - name: tls
+              mountPath: /etc/provisioning/tls
+              readOnly: true
+            - name: snom-ca
+              mountPath: /etc/provisioning/snom-ca
+              readOnly: true
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: tls
+          secret:
+            secretName: provisioning-tls
+            defaultMode: 0440
+        - name: snom-ca
+          configMap:
+            name: provisioning-snom-ca
+        - name: tmp
+          emptyDir:
+            sizeLimit: 16Mi
