@@ -16,6 +16,9 @@ import axios from 'axios';
 import { vendorCatalogues } from '../fixtures/vendor-catalogues.js';
 
 function catalogueFor(method, url) {
+  // A test of "no request at all" switches the answers off, so that a request
+  // reaches the guard and is refused and logged.
+  if (process.env.TEST_VENDOR_STAND_INS === 'off') return undefined;
   if (String(method || 'GET').toUpperCase() !== 'GET') return undefined;
   const body = vendorCatalogues[String(url).split('?')[0]];
   // A copy, so a caller that changes its answer does not change the next one.
