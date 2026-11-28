@@ -79,7 +79,7 @@ describe('phone system directory API', () => {
     return { entry, extension };
   };
   const deskphone = async (user, n, label, people) => (await ok(post(user, '/phones', {
-    kind: 'deskphone', mac: mac(n), model: 'D713', label, people,
+    kind: 'deskphone', mac: mac(n), model: '710', label, people,
   }), 201)).phone;
   const keys = (phone) => phone.lines.map((line) => (line.kind === 'other' ? `other(${line.covers.length})` : line.number));
 
@@ -180,7 +180,7 @@ describe('phone system directory API', () => {
         await post('ownerOff', '/directory/extensions', { number: '200', type: 'ring_all', entryId: entry.id }),
         await post('ownerOff', '/directory/entries', { kind: 'person', name: 'Sam', extension: '104', extensionType: 'ring_all' }),
         await get('ownerOff', '/phones'),
-        await post('ownerOff', '/phones', { kind: 'deskphone', mac: mac(90), model: 'D713', label: 'Desk', people: [] }),
+        await post('ownerOff', '/phones', { kind: 'deskphone', mac: mac(90), model: '710', label: 'Desk', people: [] }),
         await put('ownerOff', `/directory/entries/${entry.id}/key-order`, { extensionIds: [] }),
         await put('ownerOff', `/phone-endpoints/${ddi(9)}`, { extensionId: randomUUID() }),
         await put('adminOff', `/organisations/${orgs.off}/phone-system`, { busyStatusVisible: false }),
@@ -515,7 +515,7 @@ describe('phone system directory API', () => {
       expect(await db.Line.count()).toBe(lines);
       const { changes } = await ok(get('ownerA', `/phones/${made.priyaDesk.id}/changes`));
       expect(changes[0].cause.kind).toBe('labels');
-      expect((await ok(get('ownerA', `/phones/${made.priyaDesk.id}`))).lines.map((line) => line.label)).toEqual(['101', 'Sales team']);
+      expect((await ok(get('ownerA', `/phones/${made.priyaDesk.id}`))).lines.map((line) => line.label)).toEqual(['Priya N. 101', 'Sales team']);
       await ok(patch('ownerA', `/directory/entries/${made.sales.entry.id}`, { name: 'Sales' }));
     });
 
@@ -625,11 +625,11 @@ describe('phone system directory API', () => {
 
     test('a desk phone is known by its MAC address', async () => {
       const bad = [
-        (await post('ownerA', '/phones', { kind: 'deskphone', mac: '00:11:22:33:44:55', model: 'D713', label: 'Other maker', people: [] })).body.code,
+        (await post('ownerA', '/phones', { kind: 'deskphone', mac: '00:11:22:33:44:55', model: '710', label: 'Other maker', people: [] })).body.code,
         (await post('ownerA', '/phones', { kind: 'deskphone', mac: mac(20), model: 'D9999', label: 'Unknown', people: [] })).body.code,
-        (await post('ownerA', '/phones', { kind: 'deskphone', mac: mac(1), model: 'D713', label: 'Again', people: [] })).body.code,
-        (await post('ownerB', '/phones', { kind: 'deskphone', mac: mac(1).toUpperCase().replace(/(..)(?=.)/g, '$1:'), model: 'D713', label: 'Theirs', people: [] })).body.code,
-        (await post('ownerA', '/phones', { kind: 'deskphone', mac: mac(21), model: 'D713', people: [] })).body.code,
+        (await post('ownerA', '/phones', { kind: 'deskphone', mac: mac(1), model: '710', label: 'Again', people: [] })).body.code,
+        (await post('ownerB', '/phones', { kind: 'deskphone', mac: mac(1).toUpperCase().replace(/(..)(?=.)/g, '$1:'), model: '710', label: 'Theirs', people: [] })).body.code,
+        (await post('ownerA', '/phones', { kind: 'deskphone', mac: mac(21), model: '710', people: [] })).body.code,
       ];
       expect(bad).toEqual(['not_a_snom_mac', 'model_not_supported', 'phone_in_directory', 'phone_held_elsewhere', 'label_required']);
 
@@ -641,14 +641,14 @@ describe('phone system directory API', () => {
       expect(await PhoneRegistration.count({ where: { id: accounts } })).toBe(0);
       expect((await get('ownerA', `/phones/${spare.id}`)).status).toBe(404);
       // Another organisation still cannot take it. The same one can add it again.
-      expect((await post('ownerB', '/phones', { kind: 'deskphone', mac: mac(22), model: 'D713', label: 'Theirs', people: [] })).body.code).toBe('phone_held_elsewhere');
+      expect((await post('ownerB', '/phones', { kind: 'deskphone', mac: mac(22), model: '710', label: 'Theirs', people: [] })).body.code).toBe('phone_held_elsewhere');
       const back = await deskphone('ownerA', 22, 'Spare again', [made.tom.entry.id]);
       expect(back.device.id).toBe(spare.device.id);
       expect(keys(back)).toEqual(['106']);
       expect((await patch('ownerA', `/phones/${back.id}`, { model: 'D717', label: 'Spare D717' })).status).toBe(200);
       expect((await ok(get('ownerA', `/phones/${back.id}`))).capacity).toBe(3);
       await db.Device.update({ reportedModel: 'D717' }, { where: { id: back.device.id } });
-      expect((await patch('ownerA', `/phones/${back.id}`, { model: 'D713' })).body.code).toBe('phone_model_reported');
+      expect((await patch('ownerA', `/phones/${back.id}`, { model: '710' })).body.code).toBe('phone_model_reported');
     });
 
     test('the rules for extensions and members are refused with their codes', async () => {
@@ -780,7 +780,7 @@ describe('phone system directory API', () => {
         await post('memberA', '/directory/entries', { kind: 'person', name: 'New' }),
         await patch('memberA', `/directory/entries/${made.rob.entry.id}`, { role: 'Boss' }),
         await post('memberA', `/directory/extensions/${made.sales.extension.id}/members`, { entryId: made.tom.entry.id }),
-        await post('memberA', '/phones', { kind: 'deskphone', mac: mac(40), model: 'D713', label: 'Mine', people: [] }),
+        await post('memberA', '/phones', { kind: 'deskphone', mac: mac(40), model: '710', label: 'Mine', people: [] }),
         await del('memberA', `/phones/${made.robDesk.id}`),
       ];
       expect(writes.map((res) => res.status)).toEqual([403, 403, 403, 403, 403]);

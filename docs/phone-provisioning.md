@@ -68,19 +68,28 @@ The file does not pin a firmware version.
 
 The phone names its model when it fetches. If that differs from the model that was typed, the reported model wins and the phone's lines are worked out again. A model that is not supported is refused, and the phone shows the failure `model_not_supported`. When the request names no model, the model on the phone's row decides.
 
-The supported models are the Snom D713, D717, D735 and D785. Each leaves the factory with its own SHA-256 certificate under Snom's SHA-256 CA.
+The supported models are the Snom D713, D717, D735 and D785, and the Snom 710 for testing (see below). The D7xx models leave the factory with their own SHA-256 certificate under Snom's SHA-256 CA.
+
+A model can be in the catalogue as not supported (`supported: false` in `lib/pbx/phone-models.js`). Then:
+
+- `POST /phones` and a change of model refuse it: 400, code `model_not_supported`.
+- A phone of that model that is already in a directory still lists, with its lines. `POST /phones/{phoneId}/provision` refuses it: 409, code `model_not_supported`. Its fetches are refused with `model_not_supported`, which the phone then shows as its failure.
+- If the model was typed wrongly, change it with `PATCH /phones/{phoneId}` and provision again. A phone that has reported its model cannot be changed: remove it.
 
 ### Models with a built-in SHA-1 certificate
 
-Older Snom models, among them the 710, D712, 715, D725, D745 and D765, leave the factory with a SHA-1 certificate under Snom's older CA. The service refuses such a certificate (`certificate_untrusted` in the fetch log), and that does not change.
+Older Snom models, among them the 710, D712, 715, D725, D745 and D765, leave the factory with a SHA-1 certificate under Snom's older CA. The service refuses such a certificate (`certificate_untrusted` in the fetch log), and that does not change: the older CA is not trusted.
 
-Snom's documentation describes an upgrade that gives such a phone its own SHA-256 certificate (the "Upgrade to SHA-2" section of Snom's TLS Support page). A phone of these models needs that upgrade before it could fetch from this service. This has not been tested with this service on any of these models, so none of them is in the list of supported models.
+Snom's documentation describes an upgrade that gives such a phone its own SHA-256 certificate (the "Upgrade to SHA-2" section of Snom's TLS Support page). A phone of these models needs that upgrade, and must present its SHA-256 certificate, before it can fetch from this service.
 
-The 710 is in the catalogue as not supported:
+### The Snom 710
 
-- `POST /phones` and a change of model refuse it: 400, code `model_not_supported`.
-- A 710 that is already in a directory still lists, with its lines. `POST /phones/{phoneId}/provision` refuses it: 409, code `model_not_supported`. Its fetches are refused: with `certificate_untrusted` while it presents a SHA-1 certificate, and otherwise with `model_not_supported`, which the phone then shows as its failure.
-- If the model was typed wrongly, change it with `PATCH /phones/{phoneId}` and provision again. A phone that has reported its model cannot be changed: remove it.
+The 710 is in the catalogue as supported so that it can be tested. It can be added and given a settings address. It is not yet proved on a real phone:
+
+- A 710 that presents its factory certificate is refused with `certificate_untrusted`, as above.
+- A 710 with Snom's SHA-2 upgrade that presents its SHA-256 certificate should be served. This has not been tested.
+
+The 710 may be taken out of the supported models again. **Decide before a production release whether it stays.** To take it out, set its entry to `supported: false`: the rules above for a model that is not supported then apply to every 710 already in a directory.
 
 A platform operator can set `lineLimit` on a desk phone with `PATCH /phones/{phoneId}` to give it fewer lines than its model takes.
 
