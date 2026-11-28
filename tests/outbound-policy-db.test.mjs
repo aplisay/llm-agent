@@ -829,7 +829,7 @@ describe('the outbound policy of an organisation', () => {
       const res = await read();
       expect(res.body.blocked).toBe(true);
       expect(res.body.reasons).toEqual([{
-        code: 'daily_spend_limit', message: expect.any(String), limit: 'spendPerDayMicros', value: 1_000_000, current: 1_000_000,
+        code: 'daily_spend_limit', message: expect.any(String), scope: 'all', limit: 'spendPerDayMicros', value: 1_000_000, current: 1_000_000,
         until: periodsAt(new Date(dayStart.valueOf() + 36 * 3_600_000)).dayStart.toISOString(),
       }]);
     });
@@ -860,6 +860,45 @@ describe('the outbound policy of an organisation', () => {
       const closed = Object.fromEntries(['ukLandline', 'ukMobile', 'freephone', 'service', 'premium', 'crownDependencies', 'international'].map((c) => [c, false]));
       await setPolicy(orgs.phone, { classes: closed });
       expect(await codes()).toEqual(['destination_class']);
+    });
+
+    describe('a number whose emergency address record is rejected', () => {
+      const number = (i) => `44207${stamp}${String(i).padStart(2, '0')}`;
+      const addNumbers = (from, to, fields = {}) => db.PhoneNumber.bulkCreate(
+        Array.from({ length: to - from }, (_, k) => ({
+          number: number(from + k), handler: 'livekit', organisationId: orgs.phone, aplisayId: WIDE, ...fields,
+        })),
+      );
+      afterEach(() => db.PhoneNumber.destroy({ where: { organisationId: orgs.phone } }));
+
+      test('is named with its state and how many of the numbers it stops, and does not block the others', async () => {
+        await addNumbers(0, 2);
+        await addNumbers(2, 3, { emergencyRecordState: 'rejected' });
+        const shown = await authorise(orgs.phone, '+442079460123', { presentNumber: `+${number(2)}` });
+        expect(shown).toMatchObject({ allowed: false, code: 'emergency_record_rejected' });
+
+        const res = await read();
+        expect(res.body.blocked).toBe(false);
+        expect(res.body.reasons).toEqual([{
+          code: 'emergency_record_rejected', message: expect.any(String), scope: 'numbers',
+          state: 'rejected', numbers: [number(2)], count: 1, total: 3,
+        }]);
+
+        await db.PhoneNumber.update({ emergencyRecordState: 'rejected' }, { where: { organisationId: orgs.phone } });
+        await Organisation.update({ balance: 0 }, { where: { id: orgs.phone } });
+        const all = await read();
+        expect(all.body.blocked).toBe(true);
+        expect(all.body.reasons.map((r) => r.code)).toEqual(['emergency_record_rejected', 'balance_empty']);
+        expect(all.body.reasons[0]).toMatchObject({ numbers: [number(0), number(1), number(2)], count: 3, total: 3 });
+        expect(all.body.reasons[1].scope).toBe('all');
+      });
+
+      test('lists at most 20 numbers, and counts them all', async () => {
+        await addNumbers(0, 22, { emergencyRecordState: 'rejected' });
+        const [reason] = (await read()).body.reasons;
+        expect(reason.numbers).toEqual(Array.from({ length: 20 }, (_, i) => number(i)));
+        expect(reason).toMatchObject({ count: 22, total: 22 });
+      });
     });
 
     test('an answer is kept for a while, and a change of policy through the route drops it', async () => {

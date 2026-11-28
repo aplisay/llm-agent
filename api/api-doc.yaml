@@ -3948,7 +3948,7 @@ components:
       properties:
         blocked:
           type: boolean
-          description: True when at least one reason applies
+          description: True when every outside call is refused, that is when a reason has scope `all`
         at:
           type: string
           format: date-time
@@ -3960,10 +3960,28 @@ components:
             properties:
               code:
                 type: string
-                enum: [organisation_deactivated, charge_unpaid, balance_empty, destination_class, outside_hours, daily_spend_limit, monthly_spend_limit, calls_in_progress_limit, calls_per_minute_limit, outbound_policy_unavailable]
+                enum: [organisation_deactivated, charge_unpaid, emergency_record_rejected, balance_empty, destination_class, outside_hours, daily_spend_limit, monthly_spend_limit, calls_in_progress_limit, calls_per_minute_limit, outbound_policy_unavailable]
               message:
                 type: string
                 description: One sentence for a person
+              scope:
+                type: string
+                enum: [all, numbers]
+                description: "`all`: every outside call is refused. `numbers`: only phone system calls that show the numbers in `numbers`"
+              state:
+                type: string
+                description: For `emergency_record_rejected`, the state of the numbers' emergency address record
+              numbers:
+                type: array
+                items:
+                  type: string
+                description: "For `emergency_record_rejected`, the numbers in that state, sorted, at most 20, as the phone number routes show them"
+              count:
+                type: integer
+                description: For `emergency_record_rejected`, how many of the organisation's numbers are in that state
+              total:
+                type: integer
+                description: For `emergency_record_rejected`, how many numbers the organisation has
               limit:
                 type: string
                 enum: [callsInProgress, callsPerMinute, spendPerDayMicros, spendPerMonthMicros]
@@ -3982,8 +4000,16 @@ components:
         blocked: true
         at: '2026-11-27T15:04:05.000Z'
         reasons:
+          - code: emergency_record_rejected
+            message: Phone system calls that show these numbers are refused until their emergency address record is corrected. 999 and 112 still go out.
+            scope: numbers
+            state: rejected
+            numbers: ['442079460001']
+            count: 1
+            total: 3
           - code: daily_spend_limit
             message: "Today's spend on outside calls has reached its limit."
+            scope: all
             limit: spendPerDayMicros
             value: 50000000
             current: 50120000

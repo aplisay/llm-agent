@@ -34,10 +34,12 @@ export default function (logger) {
   };
   get.apiDoc = {
     summary: 'Would an outside call be refused at this moment, and why.',
-    description: 'For a banner. Lists every reason that would refuse any outside call now, whatever number is dialled: '
-      + 'the organisation deactivated or its charge unpaid, an empty balance, outside the hours rule, a spend limit reached, '
-      + 'or the calls at once or calls a minute limit reached. A number of a class the policy closes is refused too, and is '
-      + `not listed here. The answer may be up to ${NOW_CACHE_MS / 1000} seconds old.`,
+    description: 'For a banner. Lists every reason that would refuse an outside call now, whatever number is dialled. '
+      + 'Scope `all`: the organisation deactivated or its charge unpaid, an empty balance, outside the hours rule, a spend '
+      + 'limit reached, or the calls at once or calls a minute limit reached. Scope `numbers`: numbers of the organisation '
+      + 'whose emergency address record is rejected, so phone system calls that show them are refused. `blocked` is true when a reason '
+      + 'has scope `all`. A number of a class the policy closes is refused too, and is not listed here. '
+      + `The answer may be up to ${NOW_CACHE_MS / 1000} seconds old.`,
     operationId: 'getOrganisationOutboundNow',
     tags: ['Organisations'],
     parameters: [{ in: 'path', name: 'organisationId', required: true, schema: { type: 'string' } }],
