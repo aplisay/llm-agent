@@ -62,20 +62,57 @@ asks for Google's metadata server (169.254.169.254, port 80). The rule does
 not admit it. The library gets no answer, gives up, and the service logs as
 before.
 
-The rule fits a database at a public address, which is where the staging
-database is. For a database inside the cluster or on a private network, the
-target must replace the second rule with one that names it. A target can
-also narrow the second rule to the database's own address.
+The rule fits a database at a public address. For a database inside the
+cluster or on a private network, the target must replace the second rule
+with one that names it. A target can also narrow the second rule to the
+database's own address.
 
-To check the rule on a cluster, ask for any settings file from outside:
+### Checking the rule on a cluster
+
+Kubernetes does not show a pod that the rule has cut off from its database.
+The pod stays Running and Ready, because `/health` does not use the
+database. Every fetch answers 404, and a phone gets no settings. So check
+by hand when the rule first reaches a cluster, and after a change to the
+rule or to the database's address.
+
+1. **Before the apply**, check two settings: `POSTGRES_PORT` is 5432 or not
+   set, and `POSTGRES_HOST` is a public address, or a name that resolves to
+   one.
+2. **Apply, then wait 30 seconds.** A check made at once can pass on a
+   connection opened before the apply. The pool closes an idle connection
+   after 10 seconds.
+3. **Ask for any settings file from outside:**
+
+   ```bash
+   curl -sS -o /dev/null -w '%{http_code}\n' https://<host>/snom/aaaaaaaaaaaaaaaaaaaaaaaaaa/000413000000.xml
+   ```
+
+   The answer is 404 whether or not the database was reached, so read the
+   pod's log since the apply. A line `provisioning: request failed` means
+   the service could not reach its database. No such line means it could.
+   Do this twice, a minute apart.
+4. **Roll the pod once**, and see it Ready with no restarts:
+
+   ```bash
+   kubectl --context=<cluster> -n <namespace> rollout restart deployment/provisioning
+   ```
+
+   Step 3 does not cover a start, and only a start under the rule shows
+   that one works. A start looks up the database's name, opens new
+   connections, and makes the logging library's attempt. A pod that cannot
+   reach its database does not become Ready: the service waits for the
+   database before it listens, the start-up probe gives up after two
+   minutes, and the container is restarted again and again. A roll also
+   takes the newest build of the image's tag (see "The image").
+
+The way back takes the egress rules off and leaves the rest of the policy:
 
 ```bash
-curl -sS -o /dev/null -w '%{http_code}\n' https://<host>/snom/aaaaaaaaaaaaaaaaaaaaaaaaaa/000413000000.xml
+kubectl --context=<cluster> -n <namespace> patch networkpolicy provisioning --type=merge -p '{"spec":{"policyTypes":["Ingress"],"egress":null}}'
 ```
 
-The answer is 404 whether or not the database was reached, so read the
-pod's log. A line `provisioning: request failed` means the service could
-not reach its database. No such line means it could.
+It takes effect in seconds. A container that could not start comes up at
+its next try. The next apply of the target puts the rules back.
 
 ## What the pod needs
 
@@ -265,15 +302,11 @@ kubectl --context=<cluster> -n b2bua scale deployment/provisioning --replicas=0
 
 ## A production target
 
-There is none yet. Two things a production target must do differently from
-the staging one:
+There is none yet. Two things a production target must do:
 
-- **Name a fixed build.** Staging follows the `:staging` tag, and takes the
-  newest build at every start of its container. A production target must
-  name the image by a release tag or a digest.
-- **Use a database user of its own.** On staging the service signs in as
-  the API server's database user. A production deployment needs a user for
-  this service alone, with only the tables it reads and writes.
+- **Name a fixed build.** Name the image by a release tag or a digest.
+- **Use a database user of its own.** A user for this service alone, with
+  only the tables it reads and writes.
 
 ## Behind a proxy instead
 
