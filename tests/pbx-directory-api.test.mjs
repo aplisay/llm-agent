@@ -876,6 +876,39 @@ describe('phone system directory API', () => {
       expect((await post('ownerA', `/agent-db/pbx/calls/${randomUUID()}/end`, {})).status).toBe(404);
     });
   });
+
+  // Last: switching a schema step off cannot be undone in this process.
+  describe('the transcribe setting before the schema 82 upgrade', () => {
+    test('is not switched on, and a plan does not ask for a transcript', async () => {
+      const held = await person('ownerA', 'Transcribed Before', '190');
+      const fresh = await person('ownerA', 'Transcribed After', '191');
+      const path = (made) => `/directory/extensions/${made.extension.id}`;
+      const recording = async (made) => (await ok(post('ownerA', '/agent-db/pbx/resolve', {
+        callId: randomUUID(),
+        request: { kind: 'extension', organisationId: orgs.a, extensionId: made.extension.id, callerId: '+447700900123' },
+      }))).recording;
+
+      await ok(patch('ownerA', path(held), { params: { record: true, transcribe: true } }));
+      expect(await recording(held)).toEqual({ record: true, transcribe: {} });
+
+      const { stepOff } = await import('../lib/schema-guards.js');
+      stepOff('transcriptSpeaker');
+
+      // A setting held from before stays, the plan leaves it out, and other edits still work.
+      expect(await recording(held)).toEqual({ record: true });
+      const edited = await ok(patch('ownerA', path(held), { params: { ringSeconds: 40 } }));
+      expect(edited.extension.params).toMatchObject({ ringSeconds: 40, transcribe: true });
+
+      const refused = await patch('ownerA', path(fresh), { params: { record: true, transcribe: true } });
+      expect(refused.status).toBe(503);
+      expect(refused.body).toMatchObject({ code: 'phone_system_not_ready', field: 'params.transcribe' });
+      const entry = (await ok(post('ownerA', '/directory/entries', { kind: 'person', name: 'Transcribed New' }), 201)).entry;
+      const created = await post('ownerA', '/directory/extensions', { number: '192', type: 'ring_all', entryId: entry.id, params: { transcribe: true } });
+      expect(created.status).toBe(503);
+      await ok(patch('ownerA', path(fresh), { params: { record: true, transcribe: false } }));
+      expect(await recording(fresh)).toEqual({ record: true });
+    });
+  });
 });
 
 describe('the call control token', () => {

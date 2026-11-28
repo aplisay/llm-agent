@@ -15,6 +15,7 @@ import {
   pbxRelease, releasedExtensionTypes, releasedDestinationKinds, releasedPhoneKinds,
 } from '../lib/pbx/release.js';
 import { hasCapability, validateCapabilities } from '../lib/capabilities.js';
+import { stepOff } from '../lib/schema-guards.js';
 
 // November, so London is on UTC. 2026-11-11 is a Wednesday.
 const WED_1930 = new Date('2026-11-11T19:30:00Z');
@@ -968,5 +969,16 @@ describe('a deactivated organisation', () => {
   test.each(['active', 'suspended', 'provisional', undefined])('the phones of an organisation with status %s take calls', (status) => {
     expect(plan(withStatus(status), out).action).toBe('outside');
     expect(plan(withStatus(status), toExtension('x-100')).action).toBe('ring');
+  });
+});
+
+// Last: switching a schema step off cannot be undone in this process.
+describe('before the schema 82 upgrade', () => {
+  test('a plan does not ask for a transcript, whatever the setting says', () => {
+    const s = baseSnapshot();
+    ext(s, 'x-200').params = { record: true, transcribe: true };
+    expect(plan(s, toExtension('x-200')).recording).toEqual({ record: true, transcribe: {} });
+    stepOff('transcriptSpeaker');
+    expect(plan(s, toExtension('x-200')).recording).toEqual({ record: true });
   });
 });

@@ -34,7 +34,7 @@ Billing for the phone system needs the schema 79 upgrade and then a restart of t
 
 Emergency address records need the schema 81 upgrade and then a restart of the API server. Until both are done the `/emergency-records` routes answer 503 `emergency_records_not_ready`. See [emergency-records.md](emergency-records.md).
 
-The transcript of a call with no agent needs the schema 82 upgrade and then a restart of the API server. Until both are done `POST /agent-db/pbx/calls/{callId}/transcript` answers 503 `phone_system_not_ready` and stores nothing.
+The transcript of a call with no agent needs the schema 82 upgrade and then a restart of the API server. Until both are done `POST /agent-db/pbx/calls/{callId}/transcript` answers 503 `phone_system_not_ready` and stores nothing. Until then an extension's `params.transcribe` cannot be switched on either: a write that sets it to true answers 503 `phone_system_not_ready`, and no plan asks for a transcript.
 
 `GET /me` returns `organisation.capabilities`, so a front end can decide which pages to show without another request.
 
@@ -243,7 +243,7 @@ A call takes one recording. Only the call itself takes it, never a leg. The rout
 
 ### The transcript of a call
 
-An extension with `params.record` and `params.transcribe` both true asks for a transcript: the plan's `recording` block is then `{ "record": true, "transcribe": {} }`. With `record` false there is no `transcribe`, whatever the setting says. Call control uses its own default language.
+An extension with `params.record` and `params.transcribe` both true asks for a transcript: the plan's `recording` block is then `{ "record": true, "transcribe": {} }`. With `record` false there is no `transcribe`, whatever the setting says. The same holds on a database without the schema 82 upgrade. Call control uses its own default language.
 
 Call control transcribes each party of the call apart, and sends each final text with `POST /agent-db/pbx/calls/{callId}/transcript`:
 

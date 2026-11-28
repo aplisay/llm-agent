@@ -3659,7 +3659,7 @@ components:
         forwardTo: { type: string, nullable: true }
         params:
           type: object
-          description: 'Settings: `ringSeconds` (5 to 90, default 30), `callWaiting` (default true), `record` (default false), `transcribe` (default false: a transcript of each recorded call, only while `record` is true).'
+          description: 'Settings: `ringSeconds` (5 to 90, default 30), `callWaiting` (default true), `record` (default false), `transcribe` (default false: a transcript of each recorded call, only while `record` is true; switching it on answers 503 `phone_system_not_ready` until the database has the transcript upgrade).'
         outboundNumber: { type: string, nullable: true }
         shownNumber: { type: string, nullable: true, description: "The number calls out from this extension show." }
         shownNumberSource: { type: string, nullable: true, enum: [outbound, only, main] }
