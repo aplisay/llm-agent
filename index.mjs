@@ -6,7 +6,7 @@ import openapi from 'express-openapi';
 import Voices from './lib/voices/index.js';
 import cors from "cors";
 import { corsOrigins } from './lib/cors-origins.js';
-import logger from './lib/logger.js';
+import logger, { serializers as loggerSerializers } from './lib/logger.js';
 import PinoHttp from 'pino-http';
 import { createServer } from 'http';
 import createWsServer from './lib/ws-handler.js';
@@ -115,6 +115,7 @@ const pino = PinoHttp({
   // every API request carries a bearer Authorization — the default req
   // serializer would log both verbatim.
   redact: { paths: ['req.headers.cookie', 'req.headers.authorization'], censor: '[redacted]' },
+  serializers: loggerSerializers,
 });
 
 server.use(pino);

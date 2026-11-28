@@ -1,5 +1,6 @@
 import handlers from '../../lib/handlers/index.js';
 import { isModelAllowed } from '../../lib/auth/model-access.js';
+import { internalErrorBody } from '../../lib/error-answers.js';
 
 let appParameters, log;
 
@@ -59,7 +60,7 @@ const modelList = async (req, res) => {
     );
   } catch (err) {
     res.log.error(err);
-    res.status(500).send(err);
+    res.status(500).send(internalErrorBody());
   }
 };
 modelList.apiDoc = {

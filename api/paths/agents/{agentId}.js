@@ -10,6 +10,7 @@ import {
 } from '../../../lib/agent-set-labels.js';
 import { isDecisionModelName } from '../../../lib/decision-limits.js';
 import { assertAgentsNotWired, WiredListenerError } from '../../../lib/deployment-guard.js';
+import { errorBody } from '../../../lib/error-answers.js';
 import { isBuiltinAgentId, renderBuiltinAgent } from '../../../lib/builtin-agents.js';
 import { isModelAllowed } from '../../../lib/auth/model-access.js';
 import { requirePermission } from '../../../lib/auth/permissions.js';
@@ -76,7 +77,7 @@ const agentGet = async (req, res) => {
   }
   catch (err) {
     req.log.error(err);
-    res.status(404).send(err);
+    res.status(404).send(errorBody(err, `Agent with ID ${agentId} not found`));
   }
 };
 
@@ -227,7 +228,9 @@ const agentUpdate = async (req, res) => {
     if (err instanceof AgentSetValidationError) {
       return res.status(400).send({ message: err.message });
     }
-    err.message.includes('not found') ? res.status(404).send(err) : res.status(400).send(err);
+    err.message?.includes('not found')
+      ? res.status(404).send({ message: `Agent with ID ${agentId} not found` })
+      : res.status(400).send(errorBody(err, 'Agent update failed'));
   }
 };
 agentUpdate.apiDoc = {
@@ -370,7 +373,7 @@ const agentDelete = async (req, res) => {
     if (err instanceof WiredListenerError) {
       return res.status(err.status).send({ message: err.message });
     }
-    res.status(404).send(err);
+    res.status(404).send(errorBody(err, `Agent with ID ${agentId} not found`));
     req.log.error(err, 'deleting instance');
   }
 

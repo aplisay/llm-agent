@@ -1,4 +1,5 @@
 import handlers from '../../lib/handlers/index.js';
+import { internalErrorBody } from '../../lib/error-answers.js';
 
 let appParameters, log;
 
@@ -22,7 +23,7 @@ export default function (logger, voices) {
         res.send(voices);
       }
       catch (err) {
-        res.status(500).send(err);
+        res.status(500).send(internalErrorBody());
         req.log.error(err, 'getting voices');
       }
     });

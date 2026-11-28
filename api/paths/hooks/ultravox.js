@@ -1,6 +1,7 @@
 import { Agent, Instance, Call  } from '../../../lib/database.js';
 import Handler from '../../../lib/handlers/ultravox.js';
 import { maybeSendCallHook } from '../../../lib/call-hook.js';
+import { internalErrorBody } from '../../../lib/error-answers.js';
 
 let appParameters, log;
 
@@ -53,9 +54,8 @@ const recordHook = (async (req, res) => {
     }
   }
   catch (err) {
-    console.error(err, 'running ultravox webhook');
     req.log.error(err, 'running ultravox webhook');
-    res.status(500).send(err);
+    res.status(500).send(internalErrorBody());
   }
 });
 
