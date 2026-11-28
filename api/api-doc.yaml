@@ -2255,6 +2255,44 @@ components:
           type: boolean
           description: Whether this log entry is the final form for this row, if false, then the row may change in future (e.g. to add further transcriptions)
           example: true
+    CallEvent:
+      type: object
+      description: |-
+        One thing that happened on a phone system call, as call control recorded it. Only the `data`
+        keys listed here are shown, each when call control sent it. See "A call's events" in
+        docs/phone-system.md.
+      properties:
+        id:
+          type: string
+          description: The event's id, chosen by call control
+        type:
+          type: string
+          description: |-
+            `leg_rang`, `leg_key_wait`, `leg_answered`, `leg_not_answered`, `leg_skipped`, `refused`,
+            `hold`, `unhold`, `transfer_declined`, `no_answer_destination_skipped`, `recording_started`,
+            `recording_stopped`, `recording_failed`, `recording_notice_failed`, and others call control adds
+          example: leg_rang
+        at:
+          type: string
+          format: date-time
+        data:
+          type: object
+          properties:
+            party: { type: string, description: 'caller or callee' }
+            kind: { type: string, description: 'The kind of leg, or of the destination skipped' }
+            entryId: { type: string }
+            phoneId: { type: string }
+            phoneLabel: { type: string }
+            lineId: { type: string }
+            lineNumber: { type: integer }
+            key: { type: integer }
+            number: { type: string }
+            presentNumber: { type: string, description: 'The number an outside leg showed' }
+            reason: { type: string, description: 'Why a leg did not answer or was skipped, why the call was refused, or why the recording failed' }
+            code: { type: string, description: 'The outbound policy code, with not_authorised' }
+            action: { type: string }
+            tracks: { type: integer, description: 'How many parties have a recording track' }
+            try: { type: integer, description: 'Which try of the recording notice failed' }
     Call:
       type: object
       properties:

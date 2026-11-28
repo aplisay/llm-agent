@@ -280,9 +280,17 @@ A call takes one recording. Only the call itself takes it, never a leg. The rout
 
 After a 200, call control sends the length of the stored file as `recordedMs` on a second end of the call, with no `endedAt`. That writes the recording's usage row. A recording that is not stored sends no length and is not charged ([billing](billing-calls-from-usage.md#the-phone-system)).
 
+### A call's events
+
+`GET /calls/{callId}/events` gives what happened on a call, oldest first, as `{ events: [{ id, type, at, data }] }`. Call control sends the events (`POST /agent-db/pbx/calls/{callId}/events`), on the call's own id. Its `RECORDS.md` lists the types and their meaning. They include each phone or number that rang (`leg_rang`), which one answered (`leg_answered`), each that rang and did not take the call and why (`leg_not_answered`), a leg the plan left out and why (`leg_skipped`), a refusal (`refused`), hold, and the recording.
+
+`data` shows only these keys, each when call control sent it: `party`, `kind`, `entryId`, `phoneId`, `phoneLabel`, `lineId`, `lineNumber`, `key`, `number`, `presentNumber`, `reason`, `code`, `action`, `tracks` and `try`. Anything else stored there is not shown: the engine's ids for its legs, call control's id for the plan's leg, and the engine's error text.
+
+The events show to whoever sees the call ([who sees calls](#who-sees-calls)). The route answers 404 for a call its caller may not see and for a deleted call, as for a call that does not exist. An agent call, a leg, and a call on a database without the phone system schema steps, have no events.
+
 ## Who sees calls
 
-The calls routes (`GET /calls`, `GET /calls/{callId}`, `/linked`, `/logs`, `/invocation-log` and `/recording`) apply one rule to phone system calls. Agent calls show as before.
+The calls routes (`GET /calls`, `GET /calls/{callId}`, `/linked`, `/events`, `/logs`, `/invocation-log` and `/recording`) apply one rule to phone system calls. Agent calls show as before.
 
 | Who | Sees |
 |---|---|
