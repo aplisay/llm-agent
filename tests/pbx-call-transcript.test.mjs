@@ -65,6 +65,8 @@ describe('the transcript of a phone system call', () => {
       // A login with no directory person sees no phone system calls.
       nobody: { id: `tr-nobody-${stamp}`, organisationId: ORG, role: 'member' },
       stranger: { id: `tr-stranger-${stamp}`, organisationId: OTHER, role: 'owner' },
+      // Sees every call of its organisation, and may not download a recording.
+      support: { id: `tr-support-${stamp}`, organisationId: ORG, role: 'support' },
     });
     for (const [key, user] of Object.entries(users)) {
       user.sql = { where: scopeWhereForUser(user) };
@@ -164,6 +166,27 @@ describe('the transcript of a phone system call', () => {
     expect(await read('bob', call.id)).toEqual([]);
     expect(await read('nobody', call.id)).toEqual([]);
     expect(await read('stranger', call.id)).toEqual([]);
+  });
+
+  test('the texts need the right to download the recording: without it the other rows of the call still show', async () => {
+    const { call, leg } = await newCall();
+    expect((await post(call.id, [text(call.id, 'my card number is', 1), text(leg.id, 'go ahead', 2)])).status).toBe(200);
+    // A row with no speaker, as every row of an agent's call is.
+    await db.TransactionLog.create({ callId: call.id, organisationId: ORG, type: 'user', data: 'not a transcript text', isFinal: true });
+    const words = async (user) => (await read(user, call.id)).map((row) => row.data).sort();
+    const all = ['go ahead', 'my card number is', 'not a transcript text'];
+
+    expect(await words('owner')).toEqual(all);
+    expect(await words('alice')).toEqual(all);
+    expect(await words('bob')).toEqual([]);
+    expect(await words('support')).toEqual(['not a transcript text']);
+    // A member whose right to download recordings is taken away.
+    users.alice._effectivePermissions = { call: ['read'], recording: ['read'] };
+    try {
+      expect(await words('alice')).toEqual(['not a transcript text']);
+    } finally {
+      delete users.alice._effectivePermissions;
+    }
   });
 
   test('a text sent again, or twice at once, is stored once', async () => {

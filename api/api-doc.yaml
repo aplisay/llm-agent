@@ -2255,6 +2255,7 @@ components:
             On a phone system call with no agent: the id of the call row that spoke. It is the call's own id
             for the caller, or the id of the answered leg for the party that answered (see `GET /calls/{callId}/linked`).
             Every such row has the type `user`, and `createdAt` is when the words began. Null on every other row.
+            Rows with a `speaker` are returned only to a caller with `recording:download`.
         sourceId:
           type: string
           format: uuid
