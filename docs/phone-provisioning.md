@@ -154,7 +154,7 @@ Set one of the last two rows, not both.
 
 The host name needs a certificate from a public CA that the phones trust.
 
-The service reads `PROV_TLS_CERT_FILE` and `PROV_TLS_KEY_FILE` once, at start. Restart it after the certificate is renewed.
+The service reads `PROV_TLS_CERT_FILE` and `PROV_TLS_KEY_FILE` again once a minute. When they hold a renewed certificate and its key, it serves that certificate to new connections. No restart is needed, and open connections are not cut. If the two files do not fit each other, or cannot be read, the running process keeps the certificate it has and logs a warning. That is true of a running process only: the service does not start with such files.
 
 Kubernetes manifests for the service, with a staging target, are in [deploy/k8s/provisioning](../deploy/k8s/provisioning/README.md).
 
