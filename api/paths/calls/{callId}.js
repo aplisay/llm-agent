@@ -3,6 +3,7 @@ import { Sequelize } from 'sequelize';
 import { requirePermission } from '../../../lib/auth/permissions.js';
 import { callVisibility, withVisibility } from '../../../lib/call-visibility.js';
 import { callRedactionReady, notRedacted, redactCallTree } from '../../../lib/call-redaction.js';
+import { PBX_FACTS_COLUMN, withPbxFacts } from '../../../lib/pbx/call-facts.js';
 
 export const CALL_REDACTION_NOT_READY = {
   error: 'Deleting calls needs a database upgrade. Run tools/agent-admin.js upgrade-db, then restart the API server.',
@@ -26,14 +27,14 @@ export default function (logger) {
       logger.debug({ callId }, 'getCall');
       const call = await Call.findOne({
         where,
-        attributes: ['id', 'index', 'agentId', 'parentId', 'modelName', 'callerId', 'calledId', 'startedAt', 'endedAt', 'status', 'recordingId', [Sequelize.literal(COST_MICROS_LITERAL), 'costMicros']],
+        attributes: ['id', 'index', 'agentId', 'parentId', 'modelName', 'callerId', 'calledId', 'startedAt', 'endedAt', 'status', 'recordingId', [Sequelize.literal(COST_MICROS_LITERAL), 'costMicros'], PBX_FACTS_COLUMN],
       });
 
       if (!call) {
         return res.status(404).send({ error: `Call with ID ${callId} not found` });
       }
 
-      res.send({ ...call.dataValues });
+      res.send(withPbxFacts({ ...call.dataValues }));
     } catch (error) {
       req.log.error(error);
       res.status(500).send({ error: error.message });

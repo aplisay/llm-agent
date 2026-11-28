@@ -239,6 +239,56 @@ describe('who sees calls', () => {
     });
   });
 
+  describe('what a call read shows of a phone system call', () => {
+    test('GET /calls/{id} gives the listed facts of metadata.pbx, and nothing else stored there', async () => {
+      const call = await pbxCall({ callerId: '201', calledId: '999' }, {
+        direction: 'emergency', extensionNumber: '201', presentNumber: '+442079460100', addressState: 'accepted', numberFrom: 'plan',
+        fromLineNumber: 1, engine: 'engine-1', planId: 'plan-1', sourceAddress: '192.0.2.10', extensionName: { nested: true },
+      });
+      await end(call, true, 'callee_hangup');
+      const res = await get('owner', `/calls/${call.id}`);
+      expect(res.status).toBe(200);
+      expect(res.body.metadata).toEqual({
+        pbx: {
+          direction: 'emergency', extensionNumber: '201', presentNumber: '+442079460100', addressState: 'accepted', numberFrom: 'plan',
+          fromLineNumber: 1, endReason: 'callee_hangup', answered: true,
+        },
+      });
+    });
+
+    test('the list and /linked give them for the call and its leg, to the party who answered', async () => {
+      const item = (await get('alice', '/calls?limit=500')).body.calls.find((c) => c.id === calls.toAlice.id);
+      expect(item.metadata.pbx).toMatchObject({ direction: 'in', extensionNumber: '201', endReason: 'caller_hangup', answered: true });
+      const linked = (await get('alice', `/calls/${calls.toAliceLeg.id}/linked`)).body.calls;
+      const leg = linked.find((c) => c.id === calls.toAliceLeg.id);
+      expect(leg.metadata.pbx).toMatchObject({ kind: 'line', endReason: 'hangup', answered: true });
+      expect(linked.find((c) => c.id === calls.toAlice.id).metadata.pbx).toMatchObject({ direction: 'in' });
+    });
+
+    test('a call out of sight gives nothing, and an agent call has no metadata', async () => {
+      expect((await get('bob', `/calls/${calls.toAlice.id}`)).status).toBe(404);
+      await Call.update({ metadata: { aplisay: { note: 'kept' } } }, { where: { id: calls.agent.id } });
+      const agentCall = await get('owner', `/calls/${calls.agent.id}`);
+      expect(agentCall.status).toBe(200);
+      expect(agentCall.body).not.toHaveProperty('metadata');
+      const item = (await get('owner', '/calls?limit=500')).body.calls.find((c) => c.id === calls.agent.id);
+      expect(item).not.toHaveProperty('metadata');
+    });
+
+    test('a deleted call has no metadata', async () => {
+      const call = await pbxCall({}, { direction: 'in', extensionNumber: '201' });
+      await end(call, false, 'no_answer');
+      const { redactCallTree, SETTLE_MS } = await import('../lib/call-redaction.js');
+      const result = await redactCallTree({
+        callId: call.id, scope: { organisationId: ORG }, now: new Date(Date.now() + SETTLE_MS + 60_000), deleteRecordingObject: async () => {},
+      });
+      expect(result.outcome).toBe('redacted');
+      const item = (await get('owner', '/calls?limit=500&redacted=include')).body.calls.find((c) => c.id === call.id);
+      expect(item.redactedAt).toBeTruthy();
+      expect(item).not.toHaveProperty('metadata');
+    });
+  });
+
   describe('one call, its tree, its transcript and its recording follow the same rule', () => {
     test('GET /calls/{id}', async () => {
       expect((await get('alice', `/calls/${calls.toAlice.id}`)).status).toBe(200);

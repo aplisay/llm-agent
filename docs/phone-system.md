@@ -258,3 +258,25 @@ A phone system call involves a person when:
 - its answered leg rang for the person. On a shared extension, such as a team's, only the member who answered sees the call, from the moment the leg answers. A mobile that waits for its key counts once the key comes. A call to a shared extension that nobody answered shows only to those who see every call.
 
 A login with no linked person sees no phone system calls. A leg row shows when its call does. A recording or a transcript shows to whoever sees its call: otherwise the recording route answers 404, and the transcript and invocation log routes answer an empty list. `POST /agents/{id}/invoke` with a `callId` answers 404 for a call its caller cannot see, as for a call that does not exist.
+
+### What a call read shows
+
+`GET /calls`, `GET /calls/{callId}` and `/linked` give a phone system call or leg a `metadata.pbx` block, to whoever sees the call. An agent call, and a deleted call, has no `metadata`.
+
+Call control sends these facts with the call's writes (`POST /agent-db/pbx/calls`), and the end route adds `endReason` and `answered`. They are stored under `metadata.pbx`. The read shows only the keys below, each when call control sent it. Call control's own list of the names and their values is `RECORDS.md` in its source.
+
+| Key | On | What |
+|---|---|---|
+| `direction` | The call | `in` (from a carrier or a registration), `internal` (from a phone to an extension), `out` (from a phone to an outside number), `emergency` |
+| `extensionId`, `extensionNumber`, `extensionName` | The call | The extension it was made to |
+| `fromLineId`, `fromLineNumber`, `fromPhoneId`, `fromExtensionNumber` | The call | The line and phone it was made from, for a call from a phone |
+| `presentNumber` | An emergency call, a mobile leg | The number it showed. Absent when it was withheld |
+| `addressState` | An emergency call | The state of that number's 999 record when the call was placed |
+| `numberFrom` | An emergency call | `plan`, `kept` (from the line's last plan) or `none` |
+| `kind` | A leg | `line`, `external` (a mobile), `outside` (the leg of a call out), `emergency` |
+| `keyToAnswer`, `keyPressedAt` | A mobile leg | It had to wait for the key, and when the key came |
+| `entryId`, `phoneId`, `phoneLabel`, `lineId`, `lineNumber`, `key`, `number` | A leg | The person, phone, line and number it rang |
+| `endReason` | Both | How it ended. On the call: `caller_hangup`, `callee_hangup`, `caller_cancel`, `no_answer`, `busy`, `engine_lost`, `refused:<reason>` or `failed:<what>`. On a leg: `hangup`, or why it did not take the call |
+| `answered` | Both | On the call, true when it was joined to a leg. On a leg, true for the leg that took the call |
+
+Anything else call control stores there is kept and not shown: the engine instance, its own ids for the plan and the leg, and the network address a phone called from.

@@ -2322,6 +2322,48 @@ components:
             or `?redacted=only` returns a deleted call. Its caller and called numbers are null and its
             content is gone; the billing fields remain.
           example: null
+        metadata:
+          type: object
+          description: |-
+            Only on a phone system call or leg (`modelName` `telephony:pbx-call` or `telephony:pbx-leg`).
+            Absent on an agent call and on a deleted call.
+          properties:
+            pbx:
+              type: object
+              description: |-
+                What call control recorded about the call. Only these keys, each present when call control
+                sent it. See "What a call read shows" in docs/phone-system.md.
+              properties:
+                direction:
+                  type: string
+                  enum: [in, internal, out, emergency]
+                extensionId: { type: string }
+                extensionNumber: { type: string }
+                extensionName: { type: string }
+                fromLineId: { type: string, description: 'On a call from a phone' }
+                fromLineNumber: { type: integer }
+                fromPhoneId: { type: string }
+                fromExtensionNumber: { type: string }
+                presentNumber: { type: string, description: 'The number shown. On an emergency call, or a mobile leg' }
+                addressState: { type: string, description: 'On an emergency call, the state of that number''s 999 record' }
+                numberFrom: { type: string, enum: [plan, kept, none], description: 'On an emergency call, where the number shown came from' }
+                kind: { type: string, enum: [line, external, outside, emergency], description: 'On a leg' }
+                keyToAnswer: { type: boolean, description: 'On a mobile leg that had to wait for the key' }
+                keyPressedAt: { type: string, format: date-time }
+                entryId: { type: string }
+                phoneId: { type: string }
+                phoneLabel: { type: string }
+                lineId: { type: string }
+                lineNumber: { type: integer }
+                key: { type: integer, description: 'The key on the phone' }
+                number: { type: string }
+                endReason:
+                  type: string
+                  description: |-
+                    How it ended. On the call: an outcome such as `caller_hangup`, `no_answer`, `busy` or
+                    `refused:<reason>`. On a leg: `hangup`, or why it did not take the call.
+                answered: { type: boolean, description: 'On the call, true when it was joined to a leg' }
+          example: { pbx: { direction: in, extensionNumber: '200', endReason: no_answer, answered: false } }
     CallId:
       type: string
       description: The Call ID the event relates to
