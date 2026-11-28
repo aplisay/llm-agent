@@ -11,15 +11,21 @@ export default {
     "/agents/",
     ".claude",
   ],
+  // No test may call a vendor or need a provider key. See tests/setup/vendor-stand-ins.js.
+  setupFiles: ['./tests/setup/vendor-stand-ins.js'],
   setupFilesAfterEnv: [],
   // No test may reach a real LiveKit server. See tests/mocks/livekit-server-sdk.js.
   moduleNameMapper: {
     '^livekit-server-sdk$': '<rootDir>/tests/mocks/livekit-server-sdk.js',
+    '^node-fetch$': '<rootDir>/tests/mocks/node-fetch.cjs',
+    '^@google-cloud/text-to-speech$': '<rootDir>/tests/mocks/google-text-to-speech.js',
   },
   globalSetup: './tests/setup/global-setup.js',
   // Opt in to the per-worker databases created by tests/setup/global-setup.js.
   // That file is shared with the jambonz image build, which has no database.
-  globals: { provisionWorkerDatabases: true },
+  // noVendorCalls: global-setup.js replaces the provider settings with made-up
+  // ones (tests/setup/made-up-settings.js) and preloads the network guard.
+  globals: { provisionWorkerDatabases: true, noVendorCalls: true },
   testTimeout: 30000,
   // One database per worker (see tests/setup/test-db-config.js), so the suite
   // no longer has to serialise. Override with JEST_WORKERS; global-setup.js

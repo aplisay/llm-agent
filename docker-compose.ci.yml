@@ -30,9 +30,6 @@ services:
       # therefore a harmless no-op for a local `yarn test:ci`.
       cache_from:
         - ${CACHE_IMAGE:-node:22}
-      args:
-        SECRETENV_BUNDLE: ${SECRETENV_BUNDLE}
-        SECRETENV_KEY: ${SECRETENV_KEY}
     depends_on:
       postgres:
         condition: service_healthy
@@ -44,6 +41,8 @@ services:
       POSTGRES_USER: testuser
       POSTGRES_PASSWORD: testpass
       CREDENTIALS_KEY: test-secret-key-for-comprehensive-tests
+      # The settings reach the container here, when it runs. The image is
+      # built without them.
       SECRETENV_BUNDLE: ${SECRETENV_BUNDLE}
       SECRETENV_KEY: ${SECRETENV_KEY}
       DB_FORCE_SYNC: "true"
@@ -51,10 +50,12 @@ services:
       LOGLEVEL: fatal
     networks:
       - test-network
+    # `$$` is a literal `$` for the shell in the container, which reads the
+    # variable itself.
     command: >
       sh -c "
         echo '🚀 Starting all tests...' && \
-
+        if [ -n \"$$SECRETENV_BUNDLE\" ]; then npx secretenv -r GOOGLE_CREDENTIAL > credentials/google.json; fi && \
         echo 'Running all tests with yarn test...' && \
         yarn test && \
         echo '✅ All tests passed!' && \

@@ -87,6 +87,17 @@ This is the moment the `Call` row gets `recordingId` populated. If the upload
 fails, the agent **must not** call this endpoint — the absence of
 `recordingId` is the platform's "no recording exists" signal.
 
+### Calls with no agent
+
+The phone system's call control records calls that have no agent. It follows
+this contract with two differences:
+
+- The object name is `${RECORDING_STORAGE_PATH}/${callId}-<16 hex>.ogg`, a new
+  name for each try, always with a server-generated key.
+- It calls `PUT /api/agent-db/pbx/calls/:callId/recording` with
+  `{ organisationId, recordingId, encryptionKey }`. That route stores a
+  recording once. See `docs/phone-system.md`, "The recording of a call".
+
 ## Public surface
 
 Both implementations expose the same primitives, named to read naturally in

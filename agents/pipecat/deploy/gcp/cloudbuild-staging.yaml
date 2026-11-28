@@ -38,8 +38,8 @@ steps:
         esac
         exec docker build --no-cache \
           --build-arg BUILD_ENV=production \
-          -t $_AR_HOSTNAME/$PROJECT_ID/containers/$REPO_NAME/freeswitch:$COMMIT_SHA \
-          -t $_AR_HOSTNAME/$PROJECT_ID/containers/$REPO_NAME/freeswitch:next \
+          -t $_AR_HOSTNAME/$PROJECT_ID/containers/$_REGISTRY_DIR/freeswitch:$COMMIT_SHA \
+          -t $_AR_HOSTNAME/$PROJECT_ID/containers/$_REGISTRY_DIR/freeswitch:next \
           -f ./agents/pipecat/freeswitch/Dockerfile ./agents/pipecat/freeswitch
 
   - name: gcr.io/cloud-builders/docker
@@ -52,7 +52,7 @@ steps:
           ",,"|*",freeswitch,"*) ;;
           *) echo "[skip] _ONLY_TRANSPORTS='$_ONLY_TRANSPORTS' excludes freeswitch"; exit 0;;
         esac
-        exec docker push --all-tags $_AR_HOSTNAME/$PROJECT_ID/containers/$REPO_NAME/freeswitch
+        exec docker push --all-tags $_AR_HOSTNAME/$PROJECT_ID/containers/$_REGISTRY_DIR/freeswitch
 
   # ----- esl-poller (part of the freeswitch transport, same gate) -----
   - name: gcr.io/cloud-builders/docker
@@ -66,8 +66,8 @@ steps:
           *) echo "[skip] _ONLY_TRANSPORTS='$_ONLY_TRANSPORTS' excludes freeswitch (esl-poller)"; exit 0;;
         esac
         exec docker build --no-cache \
-          -t $_AR_HOSTNAME/$PROJECT_ID/containers/$REPO_NAME/esl-poller:$COMMIT_SHA \
-          -t $_AR_HOSTNAME/$PROJECT_ID/containers/$REPO_NAME/esl-poller:next \
+          -t $_AR_HOSTNAME/$PROJECT_ID/containers/$_REGISTRY_DIR/esl-poller:$COMMIT_SHA \
+          -t $_AR_HOSTNAME/$PROJECT_ID/containers/$_REGISTRY_DIR/esl-poller:next \
           -f ./agents/pipecat/esl-poller/Dockerfile ./agents/pipecat/esl-poller
 
   - name: gcr.io/cloud-builders/docker
@@ -80,7 +80,7 @@ steps:
           ",,"|*",freeswitch,"*) ;;
           *) echo "[skip] _ONLY_TRANSPORTS='$_ONLY_TRANSPORTS' excludes freeswitch (esl-poller)"; exit 0;;
         esac
-        exec docker push --all-tags $_AR_HOSTNAME/$PROJECT_ID/containers/$REPO_NAME/esl-poller
+        exec docker push --all-tags $_AR_HOSTNAME/$PROJECT_ID/containers/$_REGISTRY_DIR/esl-poller
 
   # ----- sipbridge (gated on its own name) -----
   # Build context is the repo root (.) because the Dockerfile COPYs
@@ -96,8 +96,8 @@ steps:
           *) echo "[skip] _ONLY_TRANSPORTS='$_ONLY_TRANSPORTS' excludes sipbridge"; exit 0;;
         esac
         exec docker build --no-cache \
-          -t $_AR_HOSTNAME/$PROJECT_ID/containers/$REPO_NAME/sipbridge:$COMMIT_SHA \
-          -t $_AR_HOSTNAME/$PROJECT_ID/containers/$REPO_NAME/sipbridge:next \
+          -t $_AR_HOSTNAME/$PROJECT_ID/containers/$_REGISTRY_DIR/sipbridge:$COMMIT_SHA \
+          -t $_AR_HOSTNAME/$PROJECT_ID/containers/$_REGISTRY_DIR/sipbridge:next \
           -f ./agents/pipecat/sipbridge/Dockerfile .
 
   - name: gcr.io/cloud-builders/docker
@@ -110,7 +110,7 @@ steps:
           ",,"|*",sipbridge,"*) ;;
           *) echo "[skip] _ONLY_TRANSPORTS='$_ONLY_TRANSPORTS' excludes sipbridge"; exit 0;;
         esac
-        exec docker push --all-tags $_AR_HOSTNAME/$PROJECT_ID/containers/$REPO_NAME/sipbridge
+        exec docker push --all-tags $_AR_HOSTNAME/$PROJECT_ID/containers/$_REGISTRY_DIR/sipbridge
 
   # ----- secretenv-exec (always built) -----
   # Tiny static decrypt-and-exec wrapper (reuses the sipbridge Go module).
@@ -122,10 +122,10 @@ steps:
       - '--no-cache'
       - '-t'
       - >-
-        $_AR_HOSTNAME/$PROJECT_ID/containers/$REPO_NAME/secretenv-exec:$COMMIT_SHA
+        $_AR_HOSTNAME/$PROJECT_ID/containers/$_REGISTRY_DIR/secretenv-exec:$COMMIT_SHA
       - '-t'
       - >-
-        $_AR_HOSTNAME/$PROJECT_ID/containers/$REPO_NAME/secretenv-exec:next
+        $_AR_HOSTNAME/$PROJECT_ID/containers/$_REGISTRY_DIR/secretenv-exec:next
       - '-f'
       - './agents/pipecat/sipbridge/Dockerfile.secretenv-exec'
       - '.'
@@ -136,7 +136,7 @@ steps:
       - push
       - '--all-tags'
       - >-
-        $_AR_HOSTNAME/$PROJECT_ID/containers/$REPO_NAME/secretenv-exec
+        $_AR_HOSTNAME/$PROJECT_ID/containers/$_REGISTRY_DIR/secretenv-exec
     id: Push-secretenv-exec
 
   # ----- pipecat-worker (always built; ONLY_TRANSPORTS gates its daily extra) -----
@@ -156,10 +156,10 @@ steps:
       - ONLY_TRANSPORTS=$_ONLY_TRANSPORTS
       - '-t'
       - >-
-        $_AR_HOSTNAME/$PROJECT_ID/containers/$REPO_NAME/pipecat-worker:$COMMIT_SHA
+        $_AR_HOSTNAME/$PROJECT_ID/containers/$_REGISTRY_DIR/pipecat-worker:$COMMIT_SHA
       - '-t'
       - >-
-        $_AR_HOSTNAME/$PROJECT_ID/containers/$REPO_NAME/pipecat-worker:next
+        $_AR_HOSTNAME/$PROJECT_ID/containers/$_REGISTRY_DIR/pipecat-worker:next
       - '-f'
       - './agents/pipecat/Dockerfile'
       - '.'
@@ -170,7 +170,7 @@ steps:
       - push
       - '--all-tags'
       - >-
-        $_AR_HOSTNAME/$PROJECT_ID/containers/$REPO_NAME/pipecat-worker
+        $_AR_HOSTNAME/$PROJECT_ID/containers/$_REGISTRY_DIR/pipecat-worker
     id: Push-pipecat-worker
 
 # Unconditional images only — the transport images (freeswitch, esl-poller,
@@ -179,9 +179,9 @@ steps:
 # produced.
 images:
   - >-
-    $_AR_HOSTNAME/$PROJECT_ID/containers/$REPO_NAME/secretenv-exec:$COMMIT_SHA
+    $_AR_HOSTNAME/$PROJECT_ID/containers/$_REGISTRY_DIR/secretenv-exec:$COMMIT_SHA
   - >-
-    $_AR_HOSTNAME/$PROJECT_ID/containers/$REPO_NAME/pipecat-worker:$COMMIT_SHA
+    $_AR_HOSTNAME/$PROJECT_ID/containers/$_REGISTRY_DIR/pipecat-worker:$COMMIT_SHA
 
 options:
   substitutionOption: ALLOW_LOOSE
@@ -190,6 +190,8 @@ options:
   machineType: E2_HIGHCPU_8
 
 substitutions:
+  # Fixed on purpose: not taken from the repo name, so a repo rename cannot move the images.
+  _REGISTRY_DIR: llm-agent
   _AR_HOSTNAME: $LOCATION-docker.pkg.dev
   _ONLY_TRANSPORTS: ''
 

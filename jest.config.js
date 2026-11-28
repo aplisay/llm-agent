@@ -91,6 +91,8 @@ export default {
   // No test may reach a real LiveKit server. See tests/mocks/livekit-server-sdk.js.
   moduleNameMapper: {
     '^livekit-server-sdk$': '<rootDir>/tests/mocks/livekit-server-sdk.js',
+    '^node-fetch$': '<rootDir>/tests/mocks/node-fetch.cjs',
+    '^@google-cloud/text-to-speech$': '<rootDir>/tests/mocks/google-text-to-speech.js',
   },
 
   // An array of regexp pattern strings, matched against all module paths before considered 'visible' to the module loader
@@ -135,7 +137,8 @@ export default {
   // runner: "jest-runner",
 
   // The paths to modules that run some code to configure or set up the testing environment before each test
-  // setupFiles: [],
+  // No test may call a vendor or need a provider key. See tests/setup/vendor-stand-ins.js.
+  setupFiles: ['./tests/setup/vendor-stand-ins.js'],
 
   // A list of paths to modules that run some code to configure or set up the testing framework before each test
   // setupFilesAfterEnv: [],
@@ -208,7 +211,9 @@ export default {
     // tests/setup/global-setup.js. That file is shared with the jambonz image
     // build, which runs its own jest config and has no database.
     provisionWorkerDatabases: true,
-
+    // global-setup.js replaces the provider settings with made-up ones
+    // (tests/setup/made-up-settings.js) and preloads the network guard.
+    noVendorCalls: true,
   },
   transform: {
     '\\.[jt]sx?$': 'babel-jest',

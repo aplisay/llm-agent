@@ -75,6 +75,42 @@ Two consequences worth knowing:
   from the last one. Starting from a clean volume is no longer needed to avoid
   phantom failures.
 
+## No vendor calls, no provider keys
+
+The suite needs no provider key and no network beyond the test database. Tests
+see the same models and voices on a machine with every key as on one with
+none.
+
+- `tests/setup/global-setup.js` gives each setting named in
+  `tests/setup/made-up-settings.js` a made-up value, or removes it, after it
+  loads the environment. These are the model, speech and runtime settings
+  that decide which models and voices the server lists. A setting that is not
+  named there keeps the value the machine holds. So a real `DEEPGRAM_API_KEY`,
+  `GEMINI_API_KEY`, `ELEVEN_API_KEY`, `EMAIL_SEND_KEY` or S3 key in a `.env`
+  file still reaches the jest workers.
+- `tests/setup/no-outside-network.cjs` refuses a TCP connection that node
+  opens to another machine, except to the test database. It replaces
+  `net.Socket.prototype.connect`, so it also stops what node builds on that:
+  TLS, HTTP and `fetch`. jest loads it for each test file, and `NODE_OPTIONS`
+  loads it in a node child process that inherits the environment. It does not
+  stop UDP, a direct DNS lookup (`dns.lookup`, `dns.resolve`), a child process
+  that is not node (`curl`, for example), or a node child that a test starts
+  with its own environment. Set `TEST_NETWORK_LOG` to a file path to get one
+  JSON line for each refusal.
+- `tests/setup/vendor-stand-ins.js` answers the vendors' voice catalogue
+  requests from `tests/fixtures/vendor-catalogues.js`. The bodies are in each
+  vendor's own format, so the loaders in `lib/` run on them.
+
+When a test needs a vendor's answer:
+
+- For a voice in a catalogue, add it to `tests/fixtures/vendor-catalogues.js`.
+- For any other call, give the test its own answer: inject the client, or
+  replace `fetch` in the test file and pass other URLs on.
+  `tests/agent-model-entitlement.test.mjs` does this for one model call.
+
+`agents/jambonz/tests` is not part of this suite. It tests against a live
+Jambonz and runs in the Jambonz image build.
+
 ## Environment Variables
 
 The test runner container uses these environment variables:

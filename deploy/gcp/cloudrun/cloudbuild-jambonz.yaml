@@ -15,7 +15,7 @@ steps:
       - SECRETENV_KEY
       - '-t'
       - >-
-        $_AR_HOSTNAME/$PROJECT_ID/containers/$REPO_NAME/$_SERVICE_NAME:$COMMIT_SHA
+        $_AR_HOSTNAME/$PROJECT_ID/containers/$_REGISTRY_DIR/$_SERVICE_NAME:$COMMIT_SHA
       - '-f'
       - agents/jambonz/Dockerfile
       - .
@@ -27,16 +27,18 @@ steps:
     args:
       - push
       - >-
-        $_AR_HOSTNAME/$PROJECT_ID/containers/$REPO_NAME/$_SERVICE_NAME:$COMMIT_SHA
+        $_AR_HOSTNAME/$PROJECT_ID/containers/$_REGISTRY_DIR/$_SERVICE_NAME:$COMMIT_SHA
     id: Push
 images:
   - >-
-    $_AR_HOSTNAME/$PROJECT_ID/containers/$REPO_NAME/$_SERVICE_NAME:$COMMIT_SHA
+    $_AR_HOSTNAME/$PROJECT_ID/containers/$_REGISTRY_DIR/$_SERVICE_NAME:$COMMIT_SHA
 options:
   substitutionOption: ALLOW_LOOSE
   automapSubstitutions: true
   logging: CLOUD_LOGGING_ONLY
 substitutions:
+  # Fixed on purpose: not taken from the repo name, so a repo rename cannot move the images.
+  _REGISTRY_DIR: llm-agent
   _PLATFORM: managed
   _SERVICE_NAME: jambonz-agent
   _DEPLOY_REGION: $LOCATION

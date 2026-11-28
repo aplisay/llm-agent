@@ -1,7 +1,7 @@
 # Public images for each version tag: multi-arch builds pushed to GHCR with an
 # SBOM and provenance, then a GitHub Release from docs/release-notes/<tag>.md.
 # Aplisay's own deploys still build in Cloud Build (cloudbuild-release.yaml).
-# No secretenv build args are passed, so no image carries a credential.
+# No secretenv build secrets are passed, so no image carries a credential.
 name: Release images
 
 on:
