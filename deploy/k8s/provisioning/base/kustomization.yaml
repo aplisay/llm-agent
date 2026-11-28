@@ -1,0 +1,46 @@
+# Base for the desk phone provisioning service (provisioning.mjs) on
+# Kubernetes. Not meant to be applied directly: apply an environment target
+# (do-staging). See ../README.md.
+#
+# The service ends TLS itself and asks each phone for its certificate. So
+# whatever stands in front of it must pass TCP through untouched.
+#
+# The base names no namespace: the target does. The namespace is not a
+# resource here either, so `kubectl delete -k` leaves it, and the Secrets in
+# it, alone.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - deployment.yaml
+  - service.yaml
+  - networkpolicy.yaml
+
+# Both are generated, so each name carries a hash of its content and a change
+# rolls the pods by itself.
+configMapGenerator:
+  - name: provisioning-config
+    literals:
+      - NODE_ENV=production
+      - LOGLEVEL=info
+      - PROV_PORT=4010
+      - PROV_SNOM_CA_FILE=/etc/provisioning/snom-ca/snom-ca.pem
+      - PROV_TLS_CERT_FILE=/etc/provisioning/tls/tls.crt
+      - PROV_TLS_KEY_FILE=/etc/provisioning/tls/tls.key
+      # PROV_PUBLIC_URL is left to the target. Without it the service refuses
+      # to start, which is better than serving a made-up address to a phone.
+  - name: provisioning-snom-ca
+    files:
+      - snom-ca.pem
+
+# The API server's image runs the service: only the command differs. A target
+# picks the image its API server runs (see do-staging).
+images:
+  - name: europe-west1-docker.pkg.dev/llm-voice/containers/llm-agent/llm-agent
+    newTag: latest
+
+labels:
+  - includeSelectors: false
+    pairs:
+      app.kubernetes.io/part-of: aplisay
+      app.kubernetes.io/managed-by: kustomize

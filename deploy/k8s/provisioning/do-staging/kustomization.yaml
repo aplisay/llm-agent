@@ -1,0 +1,84 @@
+# DigitalOcean STAGING deploy target for the desk phone provisioning service,
+# at https://prov.sip-staging.aplisay.net on the ams3 staging cluster.
+#
+#     kubectl --context=do-ams3-… apply -k deploy/k8s/provisioning/do-staging
+#
+# Phones reach it through a DigitalOcean network load balancer of its own,
+# which passes TCP 443 through. The shared ingress cannot be used: it ends
+# TLS, so it cannot hand on the certificate a phone presents.
+#
+# It deploys into the namespace b2bua, beside the SIP edge and call control.
+# That namespace, and everything else in it, belongs to the manifests of the
+# aplisay-b2bua repo. Nothing here selects or changes their objects, and no
+# name here is one of theirs (../README.md).
+#
+# Do the steps in ../README.md ("Before the first apply") first. The apply
+# makes a load balancer, which DigitalOcean charges for.
+#
+# The image is the one the staging API server runs: the :staging tag of the
+# next lane. After each staging build, roll the pod onto it:
+#
+#     kubectl --context=do-ams3-… -n b2bua rollout restart deployment/provisioning
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: b2bua
+
+resources:
+  - ../base
+  - certificate.yaml
+
+images:
+  - name: europe-west1-docker.pkg.dev/llm-voice/containers/llm-agent/llm-agent
+    newName: europe-west1-docker.pkg.dev/llm-voice/containers/llm-agent/llm-agent-staging
+    newTag: staging
+
+configMapGenerator:
+  - name: provisioning-config
+    behavior: merge
+    literals:
+      # The API server must have the same value, or the address it gives a
+      # phone is not the one this service answers at.
+      - PROV_PUBLIC_URL=https://prov.sip-staging.aplisay.net
+
+patches:
+  - target:
+      version: v1
+      kind: Service
+      name: provisioning
+    patch: |
+      apiVersion: v1
+      kind: Service
+      metadata:
+        name: provisioning
+        annotations:
+          # A fixed name keeps the same balancer, and so the same address,
+          # for as long as this Service exists. Deleting the Service deletes
+          # the balancer, and a new one gets a new address.
+          service.beta.kubernetes.io/do-loadbalancer-name: "prov-staging"
+          # The network type passes TCP through and keeps the phone's source
+          # address, which the refusal limit and the fetch log use. The
+          # other type hides it behind the balancer's own address.
+          service.beta.kubernetes.io/do-loadbalancer-type: "REGIONAL_NETWORK"
+          service.beta.kubernetes.io/do-loadbalancer-enable-proxy-protocol: "false"
+      spec:
+        type: LoadBalancer
+        # Local keeps the source address, and sends traffic only to a node
+        # with a ready pod.
+        externalTrafficPolicy: Local
+  - target:
+      group: apps
+      version: v1
+      kind: Deployment
+      name: provisioning
+    patch: |
+      apiVersion: apps/v1
+      kind: Deployment
+      metadata:
+        name: provisioning
+      spec:
+        template:
+          spec:
+            # The registry is private. This namespace holds the pull Secret.
+            imagePullSecrets:
+              - name: aplisay-ar-pull
