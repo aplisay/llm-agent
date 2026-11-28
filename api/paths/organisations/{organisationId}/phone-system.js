@@ -3,21 +3,7 @@ import { requirePermission } from '../../../../lib/auth/permissions.js';
 import { targetInScope } from '../../../../lib/auth/admin-scope.js';
 import { requirePhoneSystem, requirePhoneSystemSchema } from '../../../../lib/capabilities.js';
 import { toE164 } from '../../../../lib/directory/fields.js';
-
-const ADDRESS_FIELDS = ['name', 'premises', 'thoroughfare', 'locality', 'postcode', 'businessSuffix'];
-
-/** The address with only its known fields, or null when it is not an address. */
-function cleanAddress(address) {
-  if (!address || typeof address !== 'object' || Array.isArray(address)) return null;
-  const out = {};
-  for (const field of ADDRESS_FIELDS) {
-    if (address[field] == null) continue;
-    if (typeof address[field] !== 'string') return null;
-    const value = address[field].trim().slice(0, 120);
-    if (value) out[field] = value;
-  }
-  return out.name && out.thoroughfare && out.postcode ? out : null;
-}
+import { cleanAddress } from '../../../../lib/emergency-record-rules.js';
 
 /**
  * /api/organisations/{id}/phone-system: the organisation's phone system
@@ -82,7 +68,7 @@ export default function (logger) {
     if (address !== undefined) {
       fields.address = address === null ? null : cleanAddress(address);
       if (address !== null && !fields.address) {
-        return res.status(400).send({ error: 'An address needs a name, a street and a postcode.', code: 'invalid_address', field: 'address' });
+        return res.status(400).send({ error: 'An address needs a name, a postcode, and a street or a building.', code: 'invalid_address', field: 'address' });
       }
     }
     if (mainNumber !== undefined) {

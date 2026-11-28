@@ -96,6 +96,14 @@ tags:
       the phone system. Every route answers 503 `emergency_records_not_ready` until the database
       has had the upgrade (`tools/agent-admin.js upgrade-db`).
 
+  - name: Emergency Addresses
+    description: |-
+      The emergency address record of each of an organisation's numbers, for the organisation's own
+      users: which address the record should hold, and the state of the record at the carrier.
+      Reading needs `phoneEndpoint:read`. The addresses and the carrier's words are added for a
+      caller with `organisation:read`. Setting a number's address needs `organisation:update`.
+      Nothing here sends a record: a separate service does that (see Emergency Records).
+
 # All operations require a bearer token unless stated otherwise on the operation.
 security:
   - bearerAuth: []
@@ -4106,6 +4114,64 @@ components:
         checkedAt: { type: string, format: date-time }
         error: { type: string, nullable: true }
         errorAt: { type: string, format: date-time, nullable: true }
+    NumberEmergencyAddress:
+      description: >-
+        One number's emergency address record, as its organisation's users see it. The fields from
+        `address` on are given only to a caller who may read the organisation's settings.
+      type: object
+      required: [number, mode, state, stopsCalls]
+      properties:
+        number: { type: string, description: "The number, in digits with its country code and no `+`." }
+        mode:
+          type: string
+          enum: [organisation, own, carrier]
+          description: "Whose address the record should hold: the organisation's, or the number's own."
+        state:
+          type: string
+          enum: [not_entered, draft, invalid, submitted, accepted, rejected, carrier, mismatch]
+          description: The state of the record at the carrier.
+        stateSince: { type: string, format: date-time, nullable: true }
+        submittedAt: { type: string, format: date-time, nullable: true }
+        checkedAt: { type: string, format: date-time, nullable: true, description: "When the status was last read from the carrier." }
+        stopsCalls: { type: boolean, description: "True when calls out that show this number are stopped because of the record's state. Emergency calls are never stopped." }
+        address:
+          type: object
+          nullable: true
+          additionalProperties: { type: string }
+          description: The address in force. Null when there is none.
+        addressSummary: { type: string, nullable: true, description: "The address in force on one line." }
+        ownAddress:
+          type: object
+          nullable: true
+          additionalProperties: { type: string }
+          description: The number's own address, also while the organisation's is in force. Null when it has none.
+        sent:
+          type: object
+          nullable: true
+          additionalProperties: { type: string }
+          description: What the carrier last took. It may be in the carrier's short forms. Null when nothing has been sent.
+        code: { type: integer, nullable: true, description: "The carrier's last status code." }
+        reason: { type: string, nullable: true, description: "The carrier's reason for a rejection." }
+        error: { type: string, nullable: true, description: "Why the address in force is not at the carrier. Null when it is." }
+        errorAt: { type: string, format: date-time, nullable: true }
+    NumberEmergencyAddressWrite:
+      description: Which address a number's record should hold. Send `mode`, `address`, or both.
+      type: object
+      properties:
+        mode:
+          type: string
+          description: "`organisation` or `own`. `own` needs the number to have an address of its own."
+        address:
+          type: object
+          nullable: true
+          description: The number's own address. Null removes it.
+          properties:
+            name: { type: string }
+            premises: { type: string }
+            thoroughfare: { type: string }
+            locality: { type: string }
+            postcode: { type: string }
+            businessSuffix: { type: string }
     EmergencyRecordError:
       description: A refused emergency record request.
       type: object

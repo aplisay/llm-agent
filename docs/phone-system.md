@@ -9,7 +9,7 @@ This page describes the part of the API that lets desk phones register to the pl
 - **Lines.** The keys of a desk phone, worked out by the platform. Each line has its own SIP account.
 - **Number routing.** A number can ring an extension in place of an agent.
 - **Internal routes for call control.** A separate service decides what each call does by asking this API. For a call that belongs to an agent, the answer names the agent.
-- **Emergency address records.** The state of the address the carrier holds for each number, kept for the service that sends it. See [emergency-records.md](emergency-records.md).
+- **Emergency address records.** The state of the address the carrier holds for each number, kept for the service that sends it. An organisation's own users read the records of its numbers and choose which address each should hold. See [emergency-records.md](emergency-records.md).
 
 Not here yet: the service that carries the calls, phone provisioning, hunt groups, queues, agents inside phone system calls, and charging.
 
@@ -32,7 +32,7 @@ The organisation's outbound policy also needs the schema 77 upgrade and then a r
 
 Billing for the phone system needs the schema 79 upgrade and then a restart of the API server. Until both are done nothing is charged, phone system calls write no usage, and an empty balance stops nothing. Charging starts on the day the upgrade ran, and no earlier day is charged. Each platform trunk that phone system calls leave by must be flagged `chargeable`; `yarn doctor` lists those that are not. The rate card's `extension` line and the trunk flags go in before the upgrade: the order is in [billing](billing-calls-from-usage.md#the-phone-system).
 
-Emergency address records need the schema 81 upgrade and then a restart of the API server. Until both are done the `/emergency-records` routes answer 503 `emergency_records_not_ready`. See [emergency-records.md](emergency-records.md).
+Emergency address records need the schema 81 upgrade and then a restart of the API server. Until both are done the `/emergency-records` and `/emergency-addresses` routes answer 503 `emergency_records_not_ready`. See [emergency-records.md](emergency-records.md).
 
 `GET /me` returns `organisation.capabilities`, so a front end can decide which pages to show without another request.
 
