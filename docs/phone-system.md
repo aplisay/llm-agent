@@ -157,6 +157,7 @@ These are under `/api/agent-db/pbx`. They take `x-callctl-token` only. The worke
 | `POST /agent-db/pbx/calls/{callId}/events` | Things that happened on a call and are not rows of their own, such as a phone that rang and was not answered. An outside leg that was not answered or not dialled gives back its place in the organisation's calls in progress ([outbound call authorisation](outbound-call-authorisation.md#the-organisations-outbound-policy)) |
 | `POST /agent-db/pbx/calls/{callId}/end` | The call or leg has ended. It writes the call's usage. Any end may carry `transcribedMs`. A second end of the call itself, sent once its recording is stored, carries `recordedMs` ([billing](billing-calls-from-usage.md#the-phone-system)) |
 | `PUT /agent-db/pbx/calls/{callId}/recording` | The call's recording is finished and in the recording store. See [the recording of a call](#the-recording-of-a-call) |
+| `GET /agent-db/pbx/lines` | Every desk phone line with the number it shows. See [the list of lines](#the-list-of-lines) |
 | `POST /agent-db/pbx/resync/claim` | Which desk phones should be told to fetch their settings? The request may be held open. See [phone provisioning](phone-provisioning.md#telling-a-phone-that-its-settings-changed) |
 
 `resolve` always answers 200 with a plan for a request it could decide. `action` is one of:
@@ -222,6 +223,43 @@ The four refusals below carry no `organisationId`. Call control records a refuse
 | `registration_not_routed` | No agent listens on the registration, or on the number called on it |
 
 A phone system call is one `calls` row with no agent, model name `telephony:pbx-call` and platform `pbx`. Every call and answered leg writes usage when it ends: a leg out to an outside number is charged, and the rest is written at nothing. Each extension but a `connection` has a monthly charge. See [billing](billing-calls-from-usage.md#the-phone-system).
+
+### The list of lines
+
+`GET /agent-db/pbx/lines` gives every desk phone line with the number it shows on a call out. Call control reads it when it starts and every few minutes, and keeps the number of each line. An emergency call that it has to place with no plan then still shows a number, also from a line that has made no call since call control started.
+
+```json
+{
+  "lines": [
+    {
+      "username": "l4f1c9e2a7b3d5e6f8a0",
+      "organisationId": "0d8f4171-54c3-45b4-8d5e-87e84b98c324",
+      "from": { "lineId": "...", "lineNumber": 100012, "phoneId": "...", "extensionId": "...", "extensionNumber": "201", "presentNumber": "+442079460820" },
+      "caller": { "number": "201", "display": "Priya N. 201", "internal": true }
+    }
+  ],
+  "next": "o1-MGQ4ZjQxNzEtNTRjMy00NWI0LThkNWUtODdlODRiOThjMzI0"
+}
+```
+
+- `username` is the SIP username of the line's account: what `resolve` takes as `fromEndpoint`.
+- `from` and `caller` are the blocks that a plan for a call from that line carries. `from.presentNumber` is null when the line has no number to show.
+- A phone with no SIP account, such as a browser phone or a mobile, has no line here.
+- An organisation's lines are listed whatever its switches: also with the phone system off, a charge unpaid, or the organisation deactivated. An emergency plan is still given for those lines.
+- The state of a number's emergency address record is not here. The plan for the call gives it.
+
+Paging is by organisation. `limit` is how many organisations a page holds, not how many lines: from 1 to 100, and 25 when absent. A page holds every line of each of its organisations, in organisation order and then line order. `next` is the `after` of the following page, and null on the last page. Treat it as opaque.
+
+A pass is not one moment: each page is worked out when it is asked for. If a phone moves between organisations while a pass runs, its lines can be in that pass twice or not at all. The next pass puts it right.
+
+| Answer | When |
+|---|---|
+| 200 | A page |
+| 400 `bad_request` | `limit` is out of range, or `after` is not a `next` this route gave. `field` says which |
+| 403 | The token check, before the route |
+| 503 `phone_system_not_ready` | The database needs the phone system upgrade |
+
+**What a pass costs.** The blocks come from an organisation's whole directory, about fifteen queries. So the server keeps each organisation's lines in memory, with a marker made from the rows they are worked out from, and reads the directory again only when the marker moves. A pass with nothing changed is two queries a page. Each API server process keeps its own, so the first pass after a process starts reads every directory. A kept organisation is read again after six hours whatever its marker says.
 
 ### The recording of a call
 
