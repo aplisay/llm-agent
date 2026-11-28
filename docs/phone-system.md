@@ -9,7 +9,7 @@ This page describes the part of the API that lets desk phones register to the pl
 - **Lines.** The keys of a desk phone, worked out by the platform. Each line has its own SIP account.
 - **Number routing.** A number can ring an extension in place of an agent.
 - **Internal routes for call control.** A separate service decides what each call does by asking this API. For a call that belongs to an agent, the answer names the agent.
-- **Emergency address records.** The state of the address the carrier holds for each number, kept for the service that sends it. See [emergency-records.md](emergency-records.md).
+- **Emergency address records.** The state of the address the carrier holds for each number, kept for the service that sends it. An organisation's own users read the records of its numbers and choose which address each should hold. See [emergency-records.md](emergency-records.md).
 
 Not here yet: the service that carries the calls, phone provisioning, hunt groups, queues, agents inside phone system calls, and charging.
 
@@ -32,7 +32,7 @@ The organisation's outbound policy also needs the schema 77 upgrade and then a r
 
 Billing for the phone system needs the schema 79 upgrade and then a restart of the API server. Until both are done nothing is charged, phone system calls write no usage, and an empty balance stops nothing. Charging starts on the day the upgrade ran, and no earlier day is charged. Each platform trunk that phone system calls leave by must be flagged `chargeable`; `yarn doctor` lists those that are not. The rate card's `extension` line and the trunk flags go in before the upgrade: the order is in [billing](billing-calls-from-usage.md#the-phone-system).
 
-Emergency address records need the schema 81 upgrade and then a restart of the API server. Until both are done the `/emergency-records` routes answer 503 `emergency_records_not_ready`. See [emergency-records.md](emergency-records.md).
+Emergency address records need the schema 81 upgrade and then a restart of the API server. Until both are done the `/emergency-records` and `/emergency-addresses` routes answer 503 `emergency_records_not_ready`. See [emergency-records.md](emergency-records.md).
 
 `GET /me` returns `organisation.capabilities`, so a front end can decide which pages to show without another request.
 
@@ -155,8 +155,9 @@ These are under `/api/agent-db/pbx`. They take `x-callctl-token` only. The worke
 | `POST /agent-db/pbx/outbound-authorisation` | May this leg to an outside number be placed? The same policy the agent workers use. The caller must fail closed |
 | `POST /agent-db/pbx/calls` | Record a call, or an answered leg of one (`parentId`). The caller chooses the id, so a write sent twice is one row |
 | `POST /agent-db/pbx/calls/{callId}/events` | Things that happened on a call and are not rows of their own, such as a phone that rang and was not answered. An outside leg that was not answered or not dialled gives back its place in the organisation's calls in progress ([outbound call authorisation](outbound-call-authorisation.md#the-organisations-outbound-policy)) |
-| `POST /agent-db/pbx/calls/{callId}/end` | The call or leg has ended. It writes the call's usage. The call's own end may carry `recordedMs`, and any end `transcribedMs` ([billing](billing-calls-from-usage.md#the-phone-system)) |
+| `POST /agent-db/pbx/calls/{callId}/end` | The call or leg has ended. It writes the call's usage. Any end may carry `transcribedMs`. A second end of the call itself, sent once its recording is stored, carries `recordedMs` ([billing](billing-calls-from-usage.md#the-phone-system)) |
 | `PUT /agent-db/pbx/calls/{callId}/recording` | The call's recording is finished and in the recording store. See [the recording of a call](#the-recording-of-a-call) |
+| `GET /agent-db/pbx/lines` | Every desk phone line with the number it shows. See [the list of lines](#the-list-of-lines) |
 | `POST /agent-db/pbx/resync/claim` | Which desk phones should be told to fetch their settings? The request may be held open. See [phone provisioning](phone-provisioning.md#telling-a-phone-that-its-settings-changed) |
 
 `resolve` always answers 200 with a plan for a request it could decide. `action` is one of:
@@ -178,6 +179,8 @@ Every plan for digits dialled on a line has a `from` block: the line, its phone,
 A call out that would show a number whose emergency address record was rejected is refused by the outbound authorisation with `emergency_record_rejected`, not by the plan. An emergency plan is never refused for it.
 
 A phone never rings for a call it places. When a line dials an extension that its own phone rings for, such as a team its user belongs to, the plan leaves that phone out and lists it in `skipped` with the reason `caller_phone`. The user's other phones still ring.
+
+A refusal of digits dialled on a known line has the same `caller` and `from` as any other plan for that line, with `from.presentNumber`, the number the line shows on a call out. That holds for `organisation_deactivated`, `phone_system_disabled` and `charge_unpaid` as well as for `invalid_number` and `no_caller_id`. Call control keeps the number from every plan, so an emergency call it must place with no plan still shows it.
 
 ### A deactivated organisation
 
@@ -221,6 +224,43 @@ The four refusals below carry no `organisationId`. Call control records a refuse
 
 A phone system call is one `calls` row with no agent, model name `telephony:pbx-call` and platform `pbx`. Every call and answered leg writes usage when it ends: a leg out to an outside number is charged, and the rest is written at nothing. Each extension but a `connection` has a monthly charge. See [billing](billing-calls-from-usage.md#the-phone-system).
 
+### The list of lines
+
+`GET /agent-db/pbx/lines` gives every desk phone line with the number it shows on a call out. Call control reads it when it starts and every few minutes, and keeps the number of each line. An emergency call that it has to place with no plan then still shows a number, also from a line that has made no call since call control started.
+
+```json
+{
+  "lines": [
+    {
+      "username": "l4f1c9e2a7b3d5e6f8a0",
+      "organisationId": "0d8f4171-54c3-45b4-8d5e-87e84b98c324",
+      "from": { "lineId": "...", "lineNumber": 100012, "phoneId": "...", "extensionId": "...", "extensionNumber": "201", "presentNumber": "+442079460820" },
+      "caller": { "number": "201", "display": "Priya N. 201", "internal": true }
+    }
+  ],
+  "next": "o1-MGQ4ZjQxNzEtNTRjMy00NWI0LThkNWUtODdlODRiOThjMzI0"
+}
+```
+
+- `username` is the SIP username of the line's account: what `resolve` takes as `fromEndpoint`.
+- `from` and `caller` are the blocks that a plan for a call from that line carries. `from.presentNumber` is null when the line has no number to show.
+- A phone with no SIP account, such as a browser phone or a mobile, has no line here.
+- An organisation's lines are listed whatever its switches: also with the phone system off, a charge unpaid, or the organisation deactivated. An emergency plan is still given for those lines.
+- The state of a number's emergency address record is not here. The plan for the call gives it.
+
+Paging is by organisation. `limit` is how many organisations a page holds, not how many lines: from 1 to 100, and 25 when absent. A page holds every line of each of its organisations, in organisation order and then line order. `next` is the `after` of the following page, and null on the last page. Treat it as opaque.
+
+A pass is not one moment: each page is worked out when it is asked for. If a phone moves between organisations while a pass runs, its lines can be in that pass twice or not at all. The next pass puts it right.
+
+| Answer | When |
+|---|---|
+| 200 | A page |
+| 400 `bad_request` | `limit` is out of range, or `after` is not a `next` this route gave. `field` says which |
+| 403 | The token check, before the route |
+| 503 `phone_system_not_ready` | The database needs the phone system upgrade |
+
+**What a pass costs.** The blocks come from an organisation's whole directory, about fifteen queries. So the server keeps each organisation's lines in memory, with a marker made from the rows they are worked out from, and reads the directory again only when the marker moves. A pass with nothing changed is two queries a page. Each API server process keeps its own, so the first pass after a process starts reads every directory. A kept organisation is read again after six hours whatever its marker says.
+
 ### The recording of a call
 
 Call control records a call with no agent, and its finishing command encodes, encrypts and uploads the file in the format of [`lib/recording/CONTRACT.md`](../lib/recording/CONTRACT.md). It then sends `PUT /agent-db/pbx/calls/{callId}/recording` with `{ organisationId, recordingId, encryptionKey }`. `recordingId` is the object's name in the recording store and must contain the call id. `encryptionKey` is the object's 32 byte key in base64. From then on `GET /calls/{callId}/recording` plays the file to whoever [sees the call](#who-sees-calls) and may download recordings.
@@ -237,6 +277,8 @@ The sender deletes its file on any 4xx answer and keeps it on a 5xx or no answer
 | 5xx | The write failed, or its result is not known | Not known |
 
 A call takes one recording. Only the call itself takes it, never a leg. The route does not check that the name is under this server's `RECORDING_STORAGE_PATH`: the finishing command must write to the same store.
+
+After a 200, call control sends the length of the stored file as `recordedMs` on a second end of the call, with no `endedAt`. That writes the recording's usage row. A recording that is not stored sends no length and is not charged ([billing](billing-calls-from-usage.md#the-phone-system)).
 
 ### A call's events
 
@@ -262,3 +304,25 @@ A phone system call involves a person when:
 - its answered leg rang for the person. On a shared extension, such as a team's, only the member who answered sees the call, from the moment the leg answers. A mobile that waits for its key counts once the key comes. A call to a shared extension that nobody answered shows only to those who see every call.
 
 A login with no linked person sees no phone system calls. A leg row shows when its call does. A recording or a transcript shows to whoever sees its call: otherwise the recording route answers 404, and the transcript and invocation log routes answer an empty list. `POST /agents/{id}/invoke` with a `callId` answers 404 for a call its caller cannot see, as for a call that does not exist.
+
+### What a call read shows
+
+`GET /calls`, `GET /calls/{callId}` and `/linked` give a phone system call or leg a `metadata.pbx` block, to whoever sees the call. An agent call, and a deleted call, has no `metadata`.
+
+Call control sends these facts with the call's writes (`POST /agent-db/pbx/calls`), and the end route adds `endReason` and `answered`. They are stored under `metadata.pbx`. The read shows only the keys below, each when call control sent it. Call control's own list of the names and their values is `RECORDS.md` in its source.
+
+| Key | On | What |
+|---|---|---|
+| `direction` | The call | `in` (from a carrier or a registration), `internal` (from a phone to an extension), `out` (from a phone to an outside number), `emergency` |
+| `extensionId`, `extensionNumber`, `extensionName` | The call | The extension it was made to |
+| `fromLineId`, `fromLineNumber`, `fromPhoneId`, `fromExtensionNumber` | The call | The line and phone it was made from, for a call from a phone |
+| `presentNumber` | An emergency call, a mobile leg | The number it showed. Absent when it was withheld |
+| `addressState` | An emergency call | The state of that number's 999 record when the call was placed |
+| `numberFrom` | An emergency call | `plan`, `kept` (from the line's last plan) or `none` |
+| `kind` | A leg | `line`, `external` (a mobile), `outside` (the leg of a call out), `emergency` |
+| `keyToAnswer`, `keyPressedAt` | A mobile leg | It had to wait for the key, and when the key came |
+| `entryId`, `phoneId`, `phoneLabel`, `lineId`, `lineNumber`, `key`, `number` | A leg | The person, phone, line and number it rang |
+| `endReason` | Both | How it ended. On the call: `caller_hangup`, `callee_hangup`, `caller_cancel`, `no_answer`, `busy`, `engine_lost`, `refused:<reason>` or `failed:<what>`. On a leg: `hangup`, or why it did not take the call |
+| `answered` | Both | On the call, true when it was joined to a leg. On a leg, true for the leg that took the call |
+
+Anything else call control stores there is kept and not shown: the engine instance, its own ids for the plan and the leg, and the network address a phone called from.

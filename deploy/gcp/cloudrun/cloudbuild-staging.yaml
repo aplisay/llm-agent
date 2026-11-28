@@ -25,7 +25,7 @@ steps:
     waitFor: ['-']
     env:
       - >-
-        CACHE_IMAGE=$_AR_HOSTNAME/$PROJECT_ID/containers/$REPO_NAME/$_SERVICE_NAME:staging
+        CACHE_IMAGE=$_AR_HOSTNAME/$PROJECT_ID/containers/$_REGISTRY_DIR/$_SERVICE_NAME:staging
     args:
       - compose
       - '-f'
@@ -56,7 +56,7 @@ steps:
       - '--target=runtime'
       - '--cache-from'
       - >-
-        $_AR_HOSTNAME/$PROJECT_ID/containers/$REPO_NAME/$_SERVICE_NAME:staging
+        $_AR_HOSTNAME/$PROJECT_ID/containers/$_REGISTRY_DIR/$_SERVICE_NAME:staging
       - '--build-arg'
       - BUILDKIT_INLINE_CACHE=1
       # Build secrets, read from this step's environment (secretEnv below).
@@ -77,10 +77,10 @@ steps:
       - TAG_NAME=$TAG_NAME
       - '-t'
       - >-
-        $_AR_HOSTNAME/$PROJECT_ID/containers/$REPO_NAME/$_SERVICE_NAME:$COMMIT_SHA
+        $_AR_HOSTNAME/$PROJECT_ID/containers/$_REGISTRY_DIR/$_SERVICE_NAME:$COMMIT_SHA
       - '-t'
       - >-
-        $_AR_HOSTNAME/$PROJECT_ID/containers/$REPO_NAME/$_SERVICE_NAME:staging
+        $_AR_HOSTNAME/$PROJECT_ID/containers/$_REGISTRY_DIR/$_SERVICE_NAME:staging
       - .
       - '-f'
       - Dockerfile
@@ -94,7 +94,7 @@ steps:
       - push
       - '--all-tags'
       - >-
-        $_AR_HOSTNAME/$PROJECT_ID/containers/$REPO_NAME/$_SERVICE_NAME
+        $_AR_HOSTNAME/$PROJECT_ID/containers/$_REGISTRY_DIR/$_SERVICE_NAME
   # gcr.io/cloud-builders/gcloud is cached on the build worker; the cloud-sdk
   # images are not, and pulling one cost this step about 30 seconds a build.
   - name: gcr.io/cloud-builders/gcloud
@@ -107,7 +107,7 @@ steps:
       - $_SERVICE_NAME
       - '--platform=managed'
       - >-
-        --image=$_AR_HOSTNAME/$PROJECT_ID/containers/$REPO_NAME/$_SERVICE_NAME:$COMMIT_SHA
+        --image=$_AR_HOSTNAME/$PROJECT_ID/containers/$_REGISTRY_DIR/$_SERVICE_NAME:$COMMIT_SHA
       - >-
         --labels=managed-by=gcp-cloud-build-deploy-cloud-run,commit-sha=$COMMIT_SHA,gcb-build-id=$BUILD_ID,gcb-trigger-id=$_TRIGGER_ID
       # Send traffic only once /api/health answers (up to 240 s), not when the port opens.
@@ -117,7 +117,7 @@ steps:
     entrypoint: gcloud
 images:
   - >-
-    $_AR_HOSTNAME/$PROJECT_ID/containers/$REPO_NAME/$_SERVICE_NAME:$COMMIT_SHA
+    $_AR_HOSTNAME/$PROJECT_ID/containers/$_REGISTRY_DIR/$_SERVICE_NAME:$COMMIT_SHA
 options:
   substitutionOption: ALLOW_LOOSE
   automapSubstitutions: true
@@ -132,3 +132,6 @@ availableSecrets:
       env: SECRETENV_BUNDLE
     - versionName: projects/$PROJECT_ID/secrets/SECRETENV_STAGING_KEY/versions/latest
       env: SECRETENV_KEY
+substitutions:
+  # Fixed on purpose: not taken from the repo name, so a repo rename cannot move the images.
+  _REGISTRY_DIR: llm-agent

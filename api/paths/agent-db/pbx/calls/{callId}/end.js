@@ -30,7 +30,7 @@ export default function (logger) {
               endedAt: { type: 'string', format: 'date-time', nullable: true },
               reason: { type: 'string', nullable: true, description: 'Why it ended, for example hangup, no_answer, refused.' },
               answered: { type: 'boolean', nullable: true },
-              recordedMs: { nullable: true, description: 'On the call itself: how long it was recorded, in whole milliseconds, held to the length of the call. Charged by the recording line of the rate card. Any other value is ignored and the call still ends.' },
+              recordedMs: { nullable: true, description: 'On the call itself, sent once its recording is stored: how long the recording is, in whole milliseconds, held to the length of the call. Charged by the recording line of the rate card when the call holds its recording, and written at nothing otherwise. Any other value is ignored and the call still ends.' },
               transcribedMs: { nullable: true, description: 'How much of the call or leg was transcribed, in whole milliseconds, held to its length. Charged by the transcription line of the rate card. Any other value is ignored.' },
             },
           },

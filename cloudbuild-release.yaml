@@ -20,7 +20,7 @@
 #
 # Manual run:
 #   gcloud builds submit --no-source --config cloudbuild-release.yaml \
-#     --substitutions=LOCATION=europe-west1,PROJECT_ID=llm-voice,REPO_NAME=llm-agent,COMMIT_SHA=<sha>,TAG_NAME=v0.9.43
+#     --substitutions=LOCATION=europe-west1,PROJECT_ID=llm-voice,_REGISTRY_DIR=llm-agent,COMMIT_SHA=<sha>,TAG_NAME=v0.9.43
 #
 # Note: the release verifies images that the per-commit builds produced, so tag
 # the release only once those builds for that commit have finished pushing.
@@ -34,7 +34,7 @@ steps:
       - -c
       - |
         set -uo pipefail
-        REG="$_AR_HOSTNAME/$PROJECT_ID/containers/$REPO_NAME"
+        REG="$_AR_HOSTNAME/$PROJECT_ID/containers/$_REGISTRY_DIR"
         : > /workspace/digests.env
         missing=0
         for img in $_RELEASE_IMAGES; do
@@ -65,7 +65,7 @@ steps:
       - -c
       - |
         set -euo pipefail
-        REG="$_AR_HOSTNAME/$PROJECT_ID/containers/$REPO_NAME"
+        REG="$_AR_HOSTNAME/$PROJECT_ID/containers/$_REGISTRY_DIR"
         while read -r img digest; do
           src="$$REG/$$img@$$digest"
           echo "Promoting $$img ($$digest) -> :latest and :$TAG_NAME"
@@ -86,7 +86,7 @@ steps:
       - $_MAIN_SERVICE
       - '--platform=managed'
       - >-
-        --image=$_AR_HOSTNAME/$PROJECT_ID/containers/$REPO_NAME/$_MAIN_SERVICE:$COMMIT_SHA
+        --image=$_AR_HOSTNAME/$PROJECT_ID/containers/$_REGISTRY_DIR/$_MAIN_SERVICE:$COMMIT_SHA
       - >-
         --labels=managed-by=gcp-cloud-build-deploy-cloud-run,commit-sha=$COMMIT_SHA,gcb-build-id=$BUILD_ID,gcb-trigger-id=$_TRIGGER_ID
       # Send traffic only once /api/health answers (up to 240 s), not when the port opens.
@@ -104,7 +104,7 @@ steps:
       - $_JAMBONZ_SERVICE
       - '--platform=managed'
       - >-
-        --image=$_AR_HOSTNAME/$PROJECT_ID/containers/$REPO_NAME/$_JAMBONZ_SERVICE:$COMMIT_SHA
+        --image=$_AR_HOSTNAME/$PROJECT_ID/containers/$_REGISTRY_DIR/$_JAMBONZ_SERVICE:$COMMIT_SHA
       - >-
         --labels=managed-by=gcp-cloud-build-deploy-cloud-run,commit-sha=$COMMIT_SHA,gcb-build-id=$BUILD_ID,gcb-trigger-id=$_TRIGGER_ID
       - '--region=$_DEPLOY_REGION'
@@ -116,6 +116,8 @@ options:
   logging: CLOUD_LOGGING_ONLY
 
 substitutions:
+  # Fixed on purpose: not taken from the repo name, so a repo rename cannot move the images.
+  _REGISTRY_DIR: llm-agent
   _AR_HOSTNAME: $LOCATION-docker.pkg.dev
   _DEPLOY_REGION: $LOCATION
   _MAIN_SERVICE: llm-agent

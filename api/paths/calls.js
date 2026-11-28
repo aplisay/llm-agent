@@ -4,6 +4,7 @@ import { visibleCallsWhere } from '../../lib/call-visibility.js';
 import { requirePermission } from '../../lib/auth/permissions.js';
 import { callRedactionReady } from '../../lib/redacted-calls.js';
 import { presentAttributes } from '../../lib/schema-guards.js';
+import { PBX_FACTS_COLUMN, withPbxFacts } from '../../lib/pbx/call-facts.js';
 let appParameters, log;
 
 const REDACTED_WHERE = {
@@ -51,6 +52,7 @@ export default function (logger) {
         attributes: [
           ...presentAttributes(Call, ['id', 'index', 'agentId', 'parentId', 'modelName', 'callerId', 'calledId', 'startedAt', 'endedAt', 'status', 'recordingId', 'redactedAt']),
           [Sequelize.literal(COST_MICROS_LITERAL), 'costMicros'],
+          PBX_FACTS_COLUMN,
         ],
         where,
         order: [['index', 'ASC']],
@@ -62,7 +64,7 @@ export default function (logger) {
       const next = (count > calls.length && calls.length)
         ? calls[calls.length - 1].index
         : false;
-      res.send({ calls, next });
+      res.send({ calls: calls.map((call) => withPbxFacts(call.get({ plain: true }))), next });
     } catch (error) {
       req.log.error(error);
       res.status(500).send({ error: error.message });

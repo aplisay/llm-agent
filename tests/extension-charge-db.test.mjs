@@ -4,7 +4,7 @@
  * an empty balance, the charge in a directory write's effect, who sees the
  * usage rows, and that none of it acts before the schema step is ready.
  */
-import { randomUUID } from 'node:crypto';
+import { randomBytes, randomUUID } from 'node:crypto';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { jest } from '@jest/globals';
@@ -459,6 +459,11 @@ describe('billing for the phone system', () => {
     })).call;
     const leg = (organisationId, parentId, fields) => pbxCall(organisationId, { parentId, ...fields });
     const rowsOf = (callId) => UsageRecord.findAll({ where: { callId }, order: [['technology', 'ASC']] });
+    const recordingRows = async (callId) => (await rowsOf(callId)).filter((row) => row.technology === 'recording');
+    /** Store a finished recording on the call, as call control's finishing command does. */
+    const keep = (call) => records.setRecording(call.id, {
+      organisationId: call.organisationId, recordingId: `recordings/${call.id}.enc`, encryptionKey: randomBytes(32).toString('base64'),
+    });
 
     test('a leg out on a flagged trunk carries the destination charge; the rest is written at nothing', async () => {
       const call = await pbxCall(orgs.phone, { calledId: '+442079460123' });
@@ -505,7 +510,9 @@ describe('billing for the phone system', () => {
       const call = await pbxCall(orgs.phone, { calledId: '+442079460123' });
       const out = await leg(orgs.phone, call.id, { calledId: '+442079460123', outboundTrunkId: CARRIER, metadata: { kind: 'external' } });
       await records.endCall(out.id, { endedAt: ONE_MINUTE_LATER, transcribedMs: 30_000 });
-      await records.endCall(call.id, { endedAt: ONE_MINUTE_LATER, recordedMs: 30_000 });
+      await records.endCall(call.id, { endedAt: ONE_MINUTE_LATER });
+      await keep(call);
+      await records.endCall(call.id, { recordedMs: 30_000 });
       const byTech = Object.fromEntries((await UsageRecord.findAll({ where: { callId: [call.id, out.id] } }))
         .map((row) => [`${row.callId === call.id ? 'call' : 'leg'}:${row.technology}`, Number(row.costMicros)]));
       // Not the 99,000 a minute of the agent line that names only the provider.
@@ -514,7 +521,9 @@ describe('billing for the phone system', () => {
 
     test('a recording length is held to the call, and a bad one is dropped while the call still ends', async () => {
       const long = await pbxCall(orgs.phone);
-      await records.endCall(long.id, { endedAt: ONE_MINUTE_LATER, recordedMs: 24 * 60 * 60 * 1000 });
+      await records.endCall(long.id, { endedAt: ONE_MINUTE_LATER });
+      await keep(long);
+      await records.endCall(long.id, { recordedMs: 24 * 60 * 60 * 1000 });
       const recording = (await rowsOf(long.id)).find((row) => row.technology === 'recording');
       expect(Number(recording.quantity)).toBe(60_000);
       for (const bad of ['abc', -5, 1.5]) {
@@ -523,6 +532,79 @@ describe('billing for the phone system', () => {
         expect(ended.live).toBe(false);
         expect((await rowsOf(call.id)).map((row) => row.technology)).toEqual(['pbx']);
       }
+    });
+
+    test('a recording is charged once, from the end call control sends after the call holds it', async () => {
+      const call = await pbxCall(orgs.phone);
+      await records.endCall(call.id, { endedAt: ONE_MINUTE_LATER });
+      expect(await recordingRows(call.id)).toHaveLength(0);
+      await keep(call);
+      await records.endCall(call.id, { recordedMs: 30_000 });
+      await records.endCall(call.id, { recordedMs: 30_000 });
+      await Promise.all([records.endCall(call.id, { recordedMs: 30_000 }), records.endCall(call.id, { recordedMs: 45_000 })]);
+      const rows = await recordingRows(call.id);
+      expect(rows).toHaveLength(1);
+      expect(rows[0]).toMatchObject({ provider: 'pbx', unit: 'milliseconds', costStatus: 'matched' });
+      expect(Number(rows[0].quantity)).toBe(30_000);
+      expect(Number(rows[0].costMicros)).toBe(5_000);
+      expect(await balanceOf(orgs.phone)).toBe(10_000_000 - 5_000);
+    });
+
+    test('a recording length for a call that holds no recording is written at nothing, and a later one changes nothing', async () => {
+      const call = await pbxCall(orgs.phone);
+      await records.endCall(call.id, { endedAt: ONE_MINUTE_LATER, recordedMs: 30_000 });
+      await keep(call);
+      await records.endCall(call.id, { recordedMs: 30_000 });
+      const rows = await recordingRows(call.id);
+      expect(rows).toHaveLength(1);
+      expect(rows[0]).toMatchObject({ costStatus: 'free' });
+      expect(Number(rows[0].costMicros)).toBe(0);
+      expect(await balanceOf(orgs.phone)).toBe(10_000_000);
+    });
+
+    test('a recording length on a leg is written at nothing', async () => {
+      const call = await pbxCall(orgs.phone);
+      const inside = await leg(orgs.phone, call.id, { calledId: '202', metadata: { kind: 'line', number: '202' } });
+      await records.endCall(inside.id, { endedAt: ONE_MINUTE_LATER, answered: true, recordedMs: 30_000 });
+      const [row] = await recordingRows(inside.id);
+      expect(row).toMatchObject({ costStatus: 'free' });
+      expect(await balanceOf(orgs.phone)).toBe(10_000_000);
+    });
+
+    describe('an erased call', () => {
+      const erase = async (call) => {
+        const { redactCallTree, SETTLE_MS } = await import('../lib/call-redaction.js');
+        const result = await redactCallTree({
+          callId: call.id,
+          scope: { organisationId: call.organisationId },
+          now: new Date(Date.now() + SETTLE_MS + 60_000),
+          deleteRecordingObject: async () => {},
+        });
+        expect(result.outcome).toBe('redacted');
+      };
+
+      test('keeps the charge for a recording written before it was erased', async () => {
+        const call = await pbxCall(orgs.phone);
+        await records.endCall(call.id, { endedAt: ONE_MINUTE_LATER });
+        await keep(call);
+        await records.endCall(call.id, { recordedMs: 30_000 });
+        await erase(call);
+        const [row] = await recordingRows(call.id);
+        expect(row).toMatchObject({ costStatus: 'matched' });
+        expect(Number(row.costMicros)).toBe(5_000);
+        expect(await balanceOf(orgs.phone)).toBe(10_000_000 - 5_000);
+      });
+
+      test('writes a recording length that comes after the erasure at nothing', async () => {
+        const call = await pbxCall(orgs.phone);
+        await records.endCall(call.id, { endedAt: ONE_MINUTE_LATER });
+        await keep(call);
+        await erase(call);
+        await records.endCall(call.id, { recordedMs: 30_000 });
+        const [row] = await recordingRows(call.id);
+        expect(row).toMatchObject({ costStatus: 'free' });
+        expect(await balanceOf(orgs.phone)).toBe(10_000_000);
+      });
     });
   });
 
