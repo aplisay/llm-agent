@@ -125,7 +125,7 @@ describe('a settings bundle of named variables', () => {
 describe('the bundle script with --only', () => {
   const SCRIPT = path.join(ROOT, 'deploy', 'bundle-secretenv.sh');
   const PUBLISH = path.join(ROOT, 'deploy', 'k8s', 'provisioning', 'publish-settings.sh');
-  const VALUES = ['db.test.example', 'p@ss', 'MADE UP KEY', 'made-up-credentials-key', 'made-up-provider-key', 'made-up-old-key'];
+  const VALUES = ['db.test.example', 'p@ss', 'MADE UP KEY', 'made-up-credentials-key', 'made-up-provider-key', 'made-up-old-key', 'made-up-admin'];
   let dir;
   let file;
   let asked;
@@ -150,7 +150,8 @@ describe('the bundle script with --only', () => {
   beforeAll(() => {
     dir = fs.mkdtempSync(path.join(os.tmpdir(), 'bundle-only-'));
     file = path.join(dir, 'made-up.env');
-    fs.writeFileSync(file, `${ENV_FILE}SECRETENV_KEY=made-up-old-key\n`);
+    // Two more database names than a service needs, and a key line.
+    fs.writeFileSync(file, `${ENV_FILE}POSTGRES_POOL_MAX=20\nPOSTGRES_ADMIN_PASSWORD=made-up-admin\nSECRETENV_KEY=made-up-old-key\n`);
     asked = path.join(dir, 'asked.log');
     const bin = path.join(dir, 'bin');
     fs.mkdirSync(bin);
@@ -208,7 +209,8 @@ describe('the bundle script with --only', () => {
     expect(planned.out).toMatch(/Secret:\s+made-up-secretenv in namespace made-up/);
     expect(planned.out).toMatch(/Only:\s+POSTGRES_\*,CREDENTIALS_KEY/);
     expect(planned.out).toMatch(/DRY RUN \(no writes\)/);
-    expect(planned.err).toContain('bundled (6): CREDENTIALS_KEY, POSTGRES_CA, POSTGRES_HOST, POSTGRES_KEY, POSTGRES_PASSWORD, POSTGRES_PORT');
+    // A prefix takes every name that starts so.
+    expect(planned.err).toContain('bundled (8): CREDENTIALS_KEY, POSTGRES_ADMIN_PASSWORD, POSTGRES_CA, POSTGRES_HOST, POSTGRES_KEY, POSTGRES_PASSWORD, POSTGRES_POOL_MAX, POSTGRES_PORT');
     // The file holds a SECRETENV_KEY line. With --only it is not bundled, so there is no warning about it.
     expect(planned.err).not.toMatch(/will be encrypted into the new bundle/);
     readOnly(planned);
@@ -234,9 +236,16 @@ describe('the bundle script with --only', () => {
     const planned = run(PUBLISH, []);
     expect(planned.status).toBe(0);
     expect(planned.out).toMatch(/Secret:\s+provisioning-secretenv in namespace b2bua/);
-    expect(planned.out).toMatch(/Only:\s+POSTGRES_\*,CREDENTIALS_KEY,PBX_REGISTRAR_DOMAIN,REGSERVER_REGISTRAR,PBX_RELEASE/);
+    // Every setting by its exact name: no prefix, so a database name the service does not read stays out.
+    const only = /Only:\s+(\S+)/.exec(planned.out)[1].split(',');
+    expect(only).toEqual([
+      'POSTGRES_HOST', 'POSTGRES_PORT', 'POSTGRES_USER', 'POSTGRES_PASSWORD', 'POSTGRES_DB',
+      'POSTGRES_CA', 'POSTGRES_CERT', 'POSTGRES_KEY', 'POSTGRES_RO_SERVER_NAME',
+      'CREDENTIALS_KEY', 'PBX_REGISTRAR_DOMAIN', 'REGSERVER_REGISTRAR', 'PBX_RELEASE',
+    ]);
     expect(planned.err).toContain('bundled (7): CREDENTIALS_KEY, PBX_REGISTRAR_DOMAIN, POSTGRES_CA, POSTGRES_HOST, POSTGRES_KEY, POSTGRES_PASSWORD, POSTGRES_PORT');
-    expect(planned.err).toContain('not in the file, so not bundled: REGSERVER_REGISTRAR, PBX_RELEASE');
+    expect(planned.err).toContain('not in the file, so not bundled: POSTGRES_USER, POSTGRES_DB, POSTGRES_CERT, POSTGRES_RO_SERVER_NAME, REGSERVER_REGISTRAR, PBX_RELEASE');
+    expect(planned.err).not.toMatch(/POSTGRES_POOL_MAX|POSTGRES_ADMIN_PASSWORD/);
     readOnly(planned);
     noValue(planned);
     for (const option of ['--k8s-secret=other', '--k8s-namespace=other', '--only=POSTGRES_*', '--target=gcp']) {

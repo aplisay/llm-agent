@@ -29,6 +29,91 @@ the pod must pass TCP through untouched:
 The NetworkPolicy leaves only that port reachable. It is open to every
 address, because the phones are anywhere.
 
+## What the pod can reach
+
+The same NetworkPolicy sets what the pod can open a connection to:
+
+| To | Port | Why |
+|---|---|---|
+| The cluster's DNS (`kube-dns` in `kube-system`) | 53, UDP and TCP | To look up the database's name, when `POSTGRES_HOST` is a name |
+| Any address outside the private ranges | 5432, TCP | The database |
+
+Nothing else: no other pod or Service, no private address, and no other
+port outside the cluster. Answers to a phone's own connection are not held
+back.
+
+How the list was found:
+
+- By the code. In the files the service loads, three things open a
+  connection of their own accord: the database pool, its listener and the
+  start-up lock. All three go to the database. The other files that can
+  open one do so only on the API server's paths (a model call, a list of
+  voices, a call hook).
+- By the settings. The pod's settings name no other service: the ConfigMap
+  holds only `PROV_*`, `NODE_ENV` and `LOGLEVEL`, and the settings Secret
+  takes only the names in the table below.
+- By a run. The service was started with a note made of every connection
+  it opened, then sent each kind of fetch, a certificate renewal and a
+  restart. It opened connections to its database and looked up that
+  database's name.
+
+One more attempt shows in such a run: at each start the logging library
+asks for Google's metadata server (169.254.169.254, port 80). The rule does
+not admit it. The library gets no answer, gives up, and the service logs as
+before.
+
+The rule fits a database at a public address. For a database inside the
+cluster or on a private network, the target must replace the second rule
+with one that names it. A target can also narrow the second rule to the
+database's own address.
+
+### Checking the rule on a cluster
+
+Kubernetes does not show a pod that the rule has cut off from its database.
+The pod stays Running and Ready, because `/health` does not use the
+database. Every fetch answers 404, and a phone gets no settings. So check
+by hand when the rule first reaches a cluster, and after a change to the
+rule or to the database's address.
+
+1. **Before the apply**, check two settings: `POSTGRES_PORT` is 5432 or not
+   set, and `POSTGRES_HOST` is a public address, or a name that resolves to
+   one.
+2. **Apply, then wait 30 seconds.** A check made at once can pass on a
+   connection opened before the apply. The pool closes an idle connection
+   after 10 seconds.
+3. **Ask for any settings file from outside:**
+
+   ```bash
+   curl -sS -o /dev/null -w '%{http_code}\n' https://<host>/snom/aaaaaaaaaaaaaaaaaaaaaaaaaa/000413000000.xml
+   ```
+
+   The answer is 404 whether or not the database was reached, so read the
+   pod's log since the apply. A line `provisioning: request failed` means
+   the service could not reach its database. No such line means it could.
+   Do this twice, a minute apart.
+4. **Roll the pod once**, and see it Ready with no restarts:
+
+   ```bash
+   kubectl --context=<cluster> -n <namespace> rollout restart deployment/provisioning
+   ```
+
+   Step 3 does not cover a start, and only a start under the rule shows
+   that one works. A start looks up the database's name, opens new
+   connections, and makes the logging library's attempt. A pod that cannot
+   reach its database does not become Ready: the service waits for the
+   database before it listens, the start-up probe gives up after two
+   minutes, and the container is restarted again and again. A roll also
+   takes the newest build of the image's tag (see "The image").
+
+The way back takes the egress rules off and leaves the rest of the policy:
+
+```bash
+kubectl --context=<cluster> -n <namespace> patch networkpolicy provisioning --type=merge -p '{"spec":{"policyTypes":["Ingress"],"egress":null}}'
+```
+
+It takes effect in seconds. A container that could not start comes up at
+its next try. The next apply of the target puts the rules back.
+
 ## What the pod needs
 
 | Thing | Where it comes from |
@@ -65,15 +150,22 @@ What it takes from the file, and nothing else:
 
 | Variable | Why |
 |---|---|
-| `POSTGRES_*` | The database, with `POSTGRES_CA`, `POSTGRES_CERT` and `POSTGRES_KEY` where it wants a client certificate |
+| `POSTGRES_HOST`, `POSTGRES_PORT`, `POSTGRES_USER`, `POSTGRES_PASSWORD`, `POSTGRES_DB` | The database |
+| `POSTGRES_CA`, `POSTGRES_CERT`, `POSTGRES_KEY`, `POSTGRES_RO_SERVER_NAME` | Its TLS, where it wants a client certificate: the server's CA, the client certificate and key, and the name on the server's certificate |
 | `CREDENTIALS_KEY` | The phone's admin password is made from it. It must be the API server's |
 | `PBX_REGISTRAR_DOMAIN`, `REGSERVER_REGISTRAR` | When a phone names a model other than the one typed, its lines are worked out again at the fetch, and a new line takes this name. Without it that fetch fails |
 | `PBX_RELEASE` | Which phone system features are on, as on the API server |
 
-The list is the `ONLY` line in `publish-settings.sh`. A setting the service
-comes to read later must be added there. `NODE_ENV` and `DB_FORCE_SYNC` are
-not in it: the manifests set the first, and the pod runs with the second
-unset.
+The list is the `ONLY` line in `publish-settings.sh`. Each setting is there
+by its exact name, the database's too. A setting the service comes to read
+later must be added there.
+
+Not in the list:
+
+- `NODE_ENV` and `DB_FORCE_SYNC`: the manifests set the first, and the pod
+  runs with the second unset.
+- The `POSTGRES_POOL_*` settings. They are the API server's own, and the
+  pod runs with the defaults: five connections at most.
 
 The process decrypts the bundle at start, and a value in the bundle
 replaces a value of the same name from the ConfigMap. The list holds no
@@ -222,6 +314,14 @@ A record then. To stop the service and keep the balancer:
 ```bash
 kubectl --context=<cluster> -n b2bua scale deployment/provisioning --replicas=0
 ```
+
+## A production target
+
+There is none yet. Two things a production target must do:
+
+- **Name a fixed build.** Name the image by a release tag or a digest.
+- **Use a database user of its own.** A user for this service alone, with
+  only the tables it reads and writes.
 
 ## Behind a proxy instead
 

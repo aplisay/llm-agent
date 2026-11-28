@@ -1,12 +1,19 @@
-# Only the service's TLS port is reachable. It is open to every address,
-# because the service ends TLS itself and the phones are anywhere.
+# What can reach the service, and what the service can reach.
+#
+# In: only the service's TLS port. It is open to every address, because the
+# service ends TLS itself and the phones are anywhere.
+#
+# Out: the cluster's DNS, and the database port at addresses outside the
+# private ranges. The service opens connections to its database and to
+# nothing else (../README.md says how that was found). A database inside the
+# cluster or on a private network needs a rule of its own in the target.
 #
 # The selector names this service's pods only. A pod it does not select is
 # not touched, so it is safe in a namespace shared with other workloads.
 #
 # Behind a proxy that passes the phone's certificate in a header
-# (PROV_CLIENT_CERT_HEADER), this rule must change so that only the proxy's
-# pods reach the port. ../README.md has the rule.
+# (PROV_CLIENT_CERT_HEADER), the ingress rule must change so that only the
+# proxy's pods reach the port. ../README.md has the rule.
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -19,7 +26,35 @@ spec:
       app.kubernetes.io/name: provisioning
   policyTypes:
     - Ingress
+    - Egress
   ingress:
     - ports:
         - protocol: TCP
           port: https
+  egress:
+    # Names, from the cluster's DNS.
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    # The database: PostgreSQL's port at a public address.
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except:
+              - 10.0.0.0/8
+              - 100.64.0.0/10
+              - 169.254.0.0/16
+              - 172.16.0.0/12
+              - 192.168.0.0/16
+      ports:
+        - protocol: TCP
+          port: 5432
