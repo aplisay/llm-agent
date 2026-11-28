@@ -67,6 +67,16 @@ database is. For a database inside the cluster or on a private network, the
 target must replace the second rule with one that names it. A target can
 also narrow the second rule to the database's own address.
 
+To check the rule on a cluster, ask for any settings file from outside:
+
+```bash
+curl -sS -o /dev/null -w '%{http_code}\n' https://<host>/snom/aaaaaaaaaaaaaaaaaaaaaaaaaa/000413000000.xml
+```
+
+The answer is 404 whether or not the database was reached, so read the
+pod's log. A line `provisioning: request failed` means the service could
+not reach its database. No such line means it could.
+
 ## What the pod needs
 
 | Thing | Where it comes from |
