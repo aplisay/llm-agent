@@ -1,0 +1,24 @@
+# The certificate of the staging provisioning name, RSA 2048, Let's Encrypt
+# by DNS-01. The name is inside the DigitalOcean zone sip-staging.aplisay.net,
+# which the issuer's DigitalOcean solver already serves, so nothing else is
+# needed. It is a certificate of its own: the registrar's certificates in
+# this namespace do not hold this name and do not depend on it.
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: provisioning-tls
+  namespace: b2bua
+spec:
+  secretName: provisioning-tls
+  issuerRef:
+    name: letsencrypt-dns
+    kind: ClusterIssuer
+  commonName: prov.sip-staging.aplisay.net
+  dnsNames:
+    - prov.sip-staging.aplisay.net
+  privateKey:
+    algorithm: RSA
+    size: 2048
+    rotationPolicy: Always
+  duration: 2160h
+  renewBefore: 720h

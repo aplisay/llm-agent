@@ -131,6 +131,10 @@ Set one of the last two rows, not both.
 
 The host name needs a certificate from a public CA that the phones trust.
 
+The service reads `PROV_TLS_CERT_FILE` and `PROV_TLS_KEY_FILE` once, at start. Restart it after the certificate is renewed.
+
+Kubernetes manifests for the service, with a staging target, are in [deploy/k8s/provisioning](../deploy/k8s/provisioning/README.md).
+
 ### Behind a proxy
 
 The proxy must ask the phone for a client certificate without checking it, pass it on in the header as URL-encoded PEM, and remove any copy of that header a client sends. With ingress-nginx:

@@ -39,7 +39,7 @@ steps:
       - -c
       - |
         set -euo pipefail
-        REG="$_AR_HOSTNAME/$PROJECT_ID/containers/$REPO_NAME"
+        REG="$_AR_HOSTNAME/$PROJECT_ID/containers/$_REGISTRY_DIR"
         # NB parse the Digest: line — the GCB builder's buildx ignores
         # `imagetools inspect --format` and prints the human output anyway.
         digest=$$(docker buildx imagetools inspect "$$REG/$_SERVICE_NAME:$COMMIT_SHA" 2>/dev/null \
@@ -77,9 +77,9 @@ steps:
           --build-arg COMMIT_SHA=$COMMIT_SHA \
           --build-arg BRANCH_NAME=$BRANCH_NAME \
           --build-arg TAG_NAME=$TAG_NAME \
-          -t $_AR_HOSTNAME/$PROJECT_ID/containers/$REPO_NAME/$_SERVICE_NAME:$COMMIT_SHA \
-          -t $_AR_HOSTNAME/$PROJECT_ID/containers/$REPO_NAME/$_SERVICE_NAME:beta \
-          -t $_AR_HOSTNAME/$PROJECT_ID/containers/$REPO_NAME/$_SERVICE_NAME:$TAG_NAME \
+          -t $_AR_HOSTNAME/$PROJECT_ID/containers/$_REGISTRY_DIR/$_SERVICE_NAME:$COMMIT_SHA \
+          -t $_AR_HOSTNAME/$PROJECT_ID/containers/$_REGISTRY_DIR/$_SERVICE_NAME:beta \
+          -t $_AR_HOSTNAME/$PROJECT_ID/containers/$_REGISTRY_DIR/$_SERVICE_NAME:$TAG_NAME \
           -f Dockerfile .
   - name: gcr.io/cloud-builders/docker
     id: Push
@@ -88,12 +88,14 @@ steps:
       - -c
       - |
         [ -f /workspace/skip-llm-agent ] && { echo "[skip] promoted existing image"; exit 0; }
-        exec docker push --all-tags $_AR_HOSTNAME/$PROJECT_ID/containers/$REPO_NAME/$_SERVICE_NAME
+        exec docker push --all-tags $_AR_HOSTNAME/$PROJECT_ID/containers/$_REGISTRY_DIR/$_SERVICE_NAME
 options:
   substitutionOption: ALLOW_LOOSE
   automapSubstitutions: true
   logging: CLOUD_LOGGING_ONLY
 substitutions:
+  # Fixed on purpose: not taken from the repo name, so a repo rename cannot move the images.
+  _REGISTRY_DIR: llm-agent
   _SERVICE_NAME: llm-agent
   _AR_HOSTNAME: europe-west1-docker.pkg.dev
 tags:
