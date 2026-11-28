@@ -35,7 +35,7 @@ export default function (logger) {
               platformCallId: { type: 'string', nullable: true },
               outboundTrunkId: { type: 'string', nullable: true, description: 'The trunk an outside leg went out on.' },
               startedAt: { type: 'string', format: 'date-time', nullable: true },
-              metadata: { type: 'object', nullable: true, description: 'Kept under `metadata.pbx` on the call: the extension, the line, the direction.' },
+              metadata: { type: 'object', nullable: true, description: 'Kept under `metadata.pbx` on the call: the extension, the line, the direction. The calls routes show only the keys listed under "What a call read shows" in docs/phone-system.md.' },
             },
           },
         },

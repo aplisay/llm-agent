@@ -40,13 +40,7 @@ spec:
         - name: provisioning
           image: europe-west1-docker.pkg.dev/llm-voice/containers/llm-agent/llm-agent:latest
           imagePullPolicy: Always
-          # The service reads its certificate once, at start. The copy lets
-          # the liveness probe see when cert-manager has renewed it.
-          command: ["/bin/sh", "-c"]
-          args:
-            - |
-              cp "$PROV_TLS_CERT_FILE" /tmp/tls-loaded.crt || exit 1
-              exec node provisioning.mjs
+          command: ["node", "provisioning.mjs"]
           envFrom:
             - configMapRef:
                 name: provisioning-config
@@ -76,27 +70,27 @@ spec:
               scheme: HTTPS
             periodSeconds: 10
             failureThreshold: 2
-          # Fails when the certificate on disk is no longer the one the
-          # process loaded, or when /health does not answer. The restart that
-          # follows loads the renewed certificate: about one restart every
-          # 60 days. Do not swap this for a plain httpGet probe, or the
-          # service serves its old certificate until it expires.
+          # Fails when /health does not answer, or when the certificate the
+          # service presents is not the one on disk for three checks running.
+          # A build that loads a renewed certificate by itself fails two
+          # checks at most, so a renewal does not restart it. A build that
+          # does not is restarted here, which loads it. Do not swap this for a
+          # plain httpGet probe while a build without the reload can still
+          # run: it would serve its old certificate until that expires.
           livenessProbe:
             exec:
               command:
-                - /bin/sh
-                - -c
-                - >-
-                  cmp -s "$PROV_TLS_CERT_FILE" /tmp/tls-loaded.crt &&
-                  node -e 'require("https").get({ host: "127.0.0.1",
-                  port: process.env.PROV_PORT, path: "/health",
-                  rejectUnauthorized: false, timeout: 4000 },
-                  (res) => process.exit(res.statusCode === 200 ? 0 : 1))
-                  .on("timeout", () => process.exit(1))
-                  .on("error", () => process.exit(1))'
+                - node
+                - -e
+                - |
+                  const wanted = new (require("crypto").X509Certificate)(require("fs").readFileSync(process.env.PROV_TLS_CERT_FILE)).fingerprint256;
+                  require("https").get({ host: "127.0.0.1", port: process.env.PROV_PORT, path: "/health", rejectUnauthorized: false, timeout: 4000 }, (res) => {
+                    const served = res.socket.getPeerX509Certificate().fingerprint256;
+                    process.exit(res.statusCode === 200 && served === wanted ? 0 : 1);
+                  }).on("timeout", () => process.exit(1)).on("error", () => process.exit(1));
             periodSeconds: 60
             timeoutSeconds: 10
-            failureThreshold: 2
+            failureThreshold: 3
           resources:
             requests:
               cpu: 50m

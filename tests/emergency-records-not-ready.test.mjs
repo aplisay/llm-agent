@@ -23,6 +23,8 @@ const { shownNumberStopped } = await import('../lib/emergency-records.js');
 const { default: listRoute } = await import('../api/paths/emergency-records.js');
 const { default: recordRoute } = await import('../api/paths/emergency-records/{number}.js');
 const { default: claimRoute } = await import('../api/paths/emergency-records/{number}/claim.js');
+const { default: addressesRoute } = await import('../api/paths/emergency-addresses.js');
+const { default: addressRoute } = await import('../api/paths/emergency-addresses/{number}.js');
 
 const logger = { info() {}, error() {}, debug() {}, warn() {} };
 const service = { id: 'u-service', role: 'emergencyService', organisationId: null };
@@ -60,6 +62,27 @@ describe('with the emergency records step off', () => {
       const res = await call(listRoute(logger).GET, { user });
       expect(res.statusCode).toBe(403);
     }
+  });
+
+  test('the routes for an organisation\'s own users answer 503 too, and read and write nothing', async () => {
+    const params = { number: '442079460810' };
+    const owner = { id: 'u-owner', role: 'owner', organisationId: 'org-1' };
+    for (const res of [
+      await call(addressesRoute(logger).GET, { user: owner }),
+      await call(addressRoute(logger).GET, { user: owner, params }),
+      await call(addressRoute(logger).PUT, { user: owner, params, body: { mode: 'own', address: { name: 'A', thoroughfare: 'B', postcode: 'C' } } }),
+      await call(addressesRoute(logger).GET, { user: { id: 'u-member', role: 'member', organisationId: 'org-1' } }),
+    ]) {
+      expect({ status: res.statusCode, code: res.body.code }).toEqual({ status: 503, code: 'emergency_records_not_ready' });
+    }
+    expect(reads).toEqual([]);
+    // A caller who may not ask at all is refused before that.
+    const member = await call(addressRoute(logger).PUT, { user: { id: 'u-member', role: 'member', organisationId: 'org-1' }, params, body: { mode: 'organisation' } });
+    expect(member.statusCode).toBe(403);
+    for (const user of [service, { id: 'system', isSystem: true }, null]) {
+      expect((await call(addressesRoute(logger).GET, { user })).statusCode).toBe(403);
+    }
+    expect(reads).toEqual([]);
   });
 
   test('the rule for calls out still reads the state', async () => {

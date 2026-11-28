@@ -355,6 +355,76 @@ describe('desk phone provisioning', () => {
     });
   });
 
+  describe('a model the catalogue marks as not supported', () => {
+    // The D713, marked not supported for these tests only.
+    let models;
+    const MODEL = 'D713';
+    const mark = (supported) => { models.PHONE_MODELS[`snom:${MODEL}`].supported = supported; };
+    beforeAll(async () => { models = await import('../lib/pbx/phone-models.js'); });
+    afterEach(() => mark(true));
+
+    test('a new phone of that model is refused, and so is a change to it', async () => {
+      const other = (await ok(post('ownerA', '/phones', { kind: 'deskphone', mac: mac(17), model: 'D717', label: 'Other model', people: [] }), 201)).phone;
+      mark(false);
+      const added = await post('ownerA', '/phones', { kind: 'deskphone', mac: mac(15), model: MODEL, label: 'Old phone', people: [] });
+      expect(added.status).toBe(400);
+      expect(added.body.code).toBe('model_not_supported');
+      const changed = await patch('ownerA', `/phones/${other.id}`, { model: MODEL });
+      expect(changed.status).toBe(400);
+      expect(changed.body.code).toBe('model_not_supported');
+      await ok(del('ownerA', `/phones/${other.id}`));
+    });
+
+    test('a phone row made before still lists, and fails clearly until its model is changed', async () => {
+      const phone = (await ok(post('ownerA', '/phones', { kind: 'deskphone', mac: mac(15), model: MODEL, label: 'Old phone', people: [made.ada.id] }), 201)).phone;
+      const token = tokenOf((await ok(post('ownerA', `/phones/${phone.id}/provision`))).provisioning.url);
+      const cert = ca.issue(mac(15).toUpperCase());
+      const fetchIt = (userAgent) => fetchFile({ token, file: `${mac(15)}.xml`, certificate: cert.certificate, userAgent });
+      mark(false);
+
+      const listed = (await ok(get('ownerA', '/phones'))).phones.find((item) => item.id === phone.id);
+      expect(listed.device).toMatchObject({ model: MODEL, state: 'waiting', failure: null });
+      expect(listed.capacity).toBe(4);
+      expect(listed.lines).toHaveLength(4);
+      expect((await ok(patch('ownerA', `/phones/${phone.id}`, { label: 'Older phone' }))).phone.label).toBe('Older phone');
+
+      // Whether the phone names its model or not, the fetch is refused.
+      for (const userAgent of [UA(MODEL), '']) {
+        expect(await fetchIt(userAgent)).toMatchObject({ status: 404, body: '', result: 'model_not_supported' });
+      }
+      expect((await ok(get('ownerA', `/phones/${phone.id}`))).device.failure).toBe('model_not_supported');
+
+      const again = await post('ownerA', `/phones/${phone.id}/provision`);
+      expect(again.status).toBe(409);
+      expect(again.body.code).toBe('model_not_supported');
+      // The refused request left the old address alone.
+      expect((await db.Device.findByPk(phone.device.id)).tokenHash).not.toBeNull();
+
+      await ok(patch('ownerA', `/phones/${phone.id}`, { model: 'D717' }));
+      await ok(post('ownerA', `/phones/${phone.id}/provision`));
+      await ok(post('ownerA', `/phones/${phone.id}/wipe`));
+      await ok(del('ownerA', `/phones/${phone.id}`));
+    });
+
+    test('a phone that says it is that model is refused, whatever was typed', async () => {
+      const phone = (await ok(post('ownerA', '/phones', { kind: 'deskphone', mac: mac(16), model: 'D717', label: 'Typed wrong', people: [] }), 201)).phone;
+      const token = tokenOf((await ok(post('ownerA', `/phones/${phone.id}/provision`))).provisioning.url);
+      const cert = ca.issue(mac(16).toUpperCase());
+      mark(false);
+      const answer = await fetchFile({ token, file: `${mac(16)}.xml`, certificate: cert.certificate, userAgent: UA(MODEL) });
+      expect(answer).toMatchObject({ status: 404, result: 'model_not_supported' });
+      expect((await ok(get('ownerA', `/phones/${phone.id}`))).device).toMatchObject({ model: 'D717', reportedModel: null, failure: 'model_not_supported' });
+      await ok(del('ownerA', `/phones/${phone.id}`));
+    });
+
+    test('the 710 can be added and given a settings address', async () => {
+      const phone = (await ok(post('ownerA', '/phones', { kind: 'deskphone', mac: mac(18), model: '710', label: 'Test 710', people: [] }), 201)).phone;
+      expect(phone.device.model).toBe('710');
+      await ok(post('ownerA', `/phones/${phone.id}/provision`));
+      await ok(del('ownerA', `/phones/${phone.id}`));
+    });
+  });
+
   describe('the HTTP server', () => {
     const path = () => `/snom/${made.token}/${mac(1)}.xml`;
 

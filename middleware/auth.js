@@ -82,15 +82,20 @@ function gateAccount(res) {
 // The organisation row is eager-loaded when not already attached. Bootstrap
 // super-admins (ADMIN_USER_IDS / x-shared-token) get full perms regardless of
 // stored role, so the first super admin exists before any role is assigned.
+// A key's roleRestriction still narrows a bootstrap super-admin's key.
 // Mutates and returns `user`. Resolved values ride the BA/AuthKey caches, so an
 // org/role change lags up to the cache TTL (~60s) — the accepted trade.
 async function attachRbac(user) {
   if (!user || user.isSystem) return user;
-  if (isBootstrapSuperAdmin(user)) {
+  const keyRestriction = keyRestrictionStatements(user._roleRestriction);
+  const bootstrap = isBootstrapSuperAdmin(user);
+  if (bootstrap && !keyRestriction) {
     user._effectivePermissions = statementsFor('superAdmin');
     user._allowedModels = null;
     return user;
   }
+  // Also for a restricted bootstrap key: without organisation:readAll, gateAccount
+  // checks the owner's organisation, and fails closed when it is not loaded.
   if (user.organisationId && !user.Organisation) {
     try {
       user.Organisation = await Organisation.findByPk(user.organisationId, {
@@ -102,11 +107,10 @@ async function attachRbac(user) {
       throw new Error('Failed to load organisation for RBAC');
     }
   }
-  user._effectivePermissions = effectivePermissions(user, user.Organisation);
-  user._allowedModels = effectiveAllowedModels(user, user.Organisation);
+  user._effectivePermissions = bootstrap ? statementsFor('superAdmin') : effectivePermissions(user, user.Organisation);
+  user._allowedModels = bootstrap ? null : effectiveAllowedModels(user, user.Organisation);
   // AuthKey principals: a key can never exceed its owner — intersect its effective
   // perms with the key's roleRestriction (§4.6). null/empty/legacy => no change.
-  const keyRestriction = keyRestrictionStatements(user._roleRestriction);
   if (keyRestriction) user._effectivePermissions = intersectStatements(user._effectivePermissions, keyRestriction);
   return user;
 }

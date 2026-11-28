@@ -1,7 +1,6 @@
+# syntax=docker/dockerfile:1
 FROM node:24-alpine
 RUN apk add git
-ARG SECRETENV_BUNDLE
-ARG SECRETENV_KEY
 EXPOSE $PORT
 WORKDIR /usr/src/app
 # Build context is the repo ROOT (`docker build -f agents/jambonz/Dockerfile .`),
@@ -21,7 +20,25 @@ WORKDIR /usr/src/app
 COPY package*.json yarn.lock ./
 RUN yarn install --frozen-lockfile
 RUN mkdir -p credentials
-RUN npx secretenv -r GOOGLE_CREDENTIAL > credentials/google.json
+# SECRETENV_BUNDLE and SECRETENV_KEY are build secrets, not build args:
+#   docker build --secret id=SECRETENV_BUNDLE,env=SECRETENV_BUNDLE \
+#                --secret id=SECRETENV_KEY,env=SECRETENV_KEY \
+#                --build-arg BUILD_ID=<new for each build> ...
+# This step and the test step read them from secret mounts under /run/secrets.
+# Secret mounts need BuildKit (DOCKER_BUILDKIT=1 on older Docker).
+#
+# The cache key of a step does not include the value of a secret, or whether
+# one was given. It does include BUILD_ID. So a build with the secrets must
+# pass a new BUILD_ID: both steps then always run again.
+ARG BUILD_ID
+RUN --mount=type=secret,id=SECRETENV_BUNDLE \
+    --mount=type=secret,id=SECRETENV_KEY \
+    if [ -s /run/secrets/SECRETENV_BUNDLE ]; then \
+      if [ -z "$BUILD_ID" ]; then echo "pass --build-arg BUILD_ID=<new value> with the secrets" >&2; exit 1; fi; \
+      SECRETENV_BUNDLE="$(cat /run/secrets/SECRETENV_BUNDLE)" \
+      SECRETENV_KEY="$(cat /run/secrets/SECRETENV_KEY)" \
+      npx secretenv -r GOOGLE_CREDENTIAL > credentials/google.json; \
+    fi
 COPY agents/jambonz .
 RUN rm -f agent-lib
 RUN rm -f tests/setup
@@ -34,6 +51,13 @@ COPY lib agent-lib
 # vendor a copy at the exact path the import expects.
 COPY agents/jambonz/vendor/livekit-model-registry.js agents/livekit/dist/lib/livekit-model-registry.js
 COPY tests/setup tests/setup
-RUN yarn test
+# The tests read their settings from the same two secrets.
+RUN --mount=type=secret,id=SECRETENV_BUNDLE \
+    --mount=type=secret,id=SECRETENV_KEY \
+    if [ -s /run/secrets/SECRETENV_BUNDLE ]; then \
+      export SECRETENV_BUNDLE="$(cat /run/secrets/SECRETENV_BUNDLE)"; \
+      export SECRETENV_KEY="$(cat /run/secrets/SECRETENV_KEY)"; \
+    fi; \
+    yarn test
 ENV NODE_ENV production
 ENTRYPOINT node index

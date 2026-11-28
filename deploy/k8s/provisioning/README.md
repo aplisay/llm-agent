@@ -105,16 +105,31 @@ kubectl --context=<cluster> -n b2bua rollout restart deployment/provisioning
 
 ## The certificate
 
-cert-manager renews the certificate 30 days before it ends. The service
-reads its certificate files once, at start, so the manifests restart it:
+cert-manager renews the certificate 30 days before it ends, and writes the
+new one to the Secret the pod mounts.
 
-- The container copies the certificate it is about to load to `/tmp`.
-- The liveness probe compares that copy with the file on disk. After a
-  renewal they differ, the probe fails, and the kubelet restarts the
-  container, which loads the new certificate.
+- The service reads its certificate files again once a minute and loads a
+  renewed certificate by itself. Nothing restarts.
+- The liveness probe checks that the certificate the service presents is
+  the one on disk. It restarts the container only after three failed
+  checks running. With such a build one check can fail after a renewal.
+  Two can fail when the files change between the service's reads of the
+  certificate and of the key: it then loads the pair a minute later.
+- A build from before the service could do this never loads the new
+  certificate. There the probe fails three times and the kubelet restarts
+  the container, which loads it. So the manifests are safe with either
+  build.
+- A Secret that holds a certificate and a key that do not fit each other
+  stops the pod. The running process keeps the certificate it has. But the
+  probe fails while the certificate on disk is not the one presented, so
+  after three checks the container is restarted, and the service does not
+  start with such a pair. Nothing answers until the Secret is put right.
+  A renewal does not cause this: cert-manager writes the two together, and
+  the kubelet swaps the mounted files in one step.
 
-Expect one restart about every 60 days. Do not replace the liveness probe
-with a plain HTTP probe.
+Do not replace the liveness probe with a plain HTTP probe while a build
+without the reload can still run: that build would serve its old
+certificate until it expires.
 
 ## The Snom CA file
 
