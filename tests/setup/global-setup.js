@@ -5,12 +5,14 @@ import { fileURLToPath } from 'node:url';
 import dotenv from 'dotenv';
 import pg from 'pg';
 import { testDbConnection, bootstrapDatabase, workerDatabase } from './test-db-config.js';
+import { applyMadeUpSettings } from './made-up-settings.js';
 
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
 const livekitRegistryDist = join(
   repoRoot,
   'agents/livekit/dist/lib/livekit-model-registry.js',
 );
+const outsideNetworkGuard = join(repoRoot, 'tests/setup/no-outside-network.cjs');
 
 /**
  * Open a connection to the bootstrap database, retrying while the container
@@ -80,6 +82,19 @@ export default async (globalConfig, projectConfig) => {
       delete process.env[key];
     }
   });
+
+  // Made-up provider settings, and the guard against outside connections
+  // preloaded into the node processes started from here on that inherit this
+  // environment: jest's workers and node children of tests. Only when the
+  // config opts in: the Jambonz image suite shares this file and tests against
+  // a live Jambonz.
+  if (projectConfig?.globals?.noVendorCalls) {
+    applyMadeUpSettings();
+    const preload = `--require ${JSON.stringify(outsideNetworkGuard)}`;
+    if (!process.env.NODE_OPTIONS?.includes(preload)) {
+      process.env.NODE_OPTIONS = [process.env.NODE_OPTIONS, preload].filter(Boolean).join(' ');
+    }
+  }
 
   // Provision databases only when the config opts in, and after clearing inherited env; the Jambonz image suite needs
   // none. See PR #301.

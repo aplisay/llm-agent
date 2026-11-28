@@ -64,6 +64,7 @@ Index of the docs in this directory. Start with the first table if you're new; t
 | [originate-api.md](originate-api.md) | Placing outbound calls from an agent/listener |
 | [phone-endpoints-api.md](phone-endpoints-api.md) | DDIs, trunks and registrations as first-class endpoints |
 | [phone-system.md](phone-system.md) | Under development: the directory, phones and worked-out lines, the `phoneSystem` capability, and the internal routes for call control |
+| [emergency-records.md](emergency-records.md) | Under development: the state of each number's emergency address record, the routes and key of the service that sends the records, and the rule that stops calls out from a number with a rejected record |
 | [phone-provisioning.md](phone-provisioning.md) | Under development: how a Snom desk phone fetches its settings, the certificate checks, wipe, and running the provisioning service |
 | [phone-numbers-api.md](phone-numbers-api.md) | Querying and managing phone numbers |
 | [number-lifecycle-adding-a-number.md](number-lifecycle-adding-a-number.md) | Carrier-side provisioning and routing a new number in |

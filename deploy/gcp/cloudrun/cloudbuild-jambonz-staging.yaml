@@ -9,10 +9,10 @@ steps:
       - SECRETENV_KEY
       - '-t'
       - >-
-        $_AR_HOSTNAME/$PROJECT_ID/containers/$REPO_NAME/$_SERVICE_NAME:$COMMIT_SHA
+        $_AR_HOSTNAME/$PROJECT_ID/containers/$_REGISTRY_DIR/$_SERVICE_NAME:$COMMIT_SHA
       - '-t'
       - >-
-        $_AR_HOSTNAME/$PROJECT_ID/containers/$REPO_NAME/$_SERVICE_NAME:staging
+        $_AR_HOSTNAME/$PROJECT_ID/containers/$_REGISTRY_DIR/$_SERVICE_NAME:staging
       - '-f'
       - agents/jambonz/Dockerfile
       - .
@@ -25,7 +25,7 @@ steps:
       - push
       - '--all-tags'
       - >-
-        $_AR_HOSTNAME/$PROJECT_ID/containers/$REPO_NAME/$_SERVICE_NAME
+        $_AR_HOSTNAME/$PROJECT_ID/containers/$_REGISTRY_DIR/$_SERVICE_NAME
     id: Push
   - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk:slim'
     args:
@@ -35,7 +35,7 @@ steps:
       - $_SERVICE_NAME
       - '--platform=managed'
       - >-
-        --image=$_AR_HOSTNAME/$PROJECT_ID/containers/$REPO_NAME/$_SERVICE_NAME:$COMMIT_SHA
+        --image=$_AR_HOSTNAME/$PROJECT_ID/containers/$_REGISTRY_DIR/$_SERVICE_NAME:$COMMIT_SHA
       - >-
         --labels=managed-by=gcp-cloud-build-deploy-cloud-run,commit-sha=$COMMIT_SHA,gcb-build-id=$BUILD_ID,gcb-trigger-id=$_TRIGGER_ID
       - '--region=$_DEPLOY_REGION'
@@ -44,12 +44,14 @@ steps:
     entrypoint: gcloud
 images:
   - >-
-    $_AR_HOSTNAME/$PROJECT_ID/containers/$REPO_NAME/$_SERVICE_NAME:$COMMIT_SHA
+    $_AR_HOSTNAME/$PROJECT_ID/containers/$_REGISTRY_DIR/$_SERVICE_NAME:$COMMIT_SHA
 options:
   substitutionOption: ALLOW_LOOSE
   automapSubstitutions: true
   logging: CLOUD_LOGGING_ONLY
 substitutions:
+  # Fixed on purpose: not taken from the repo name, so a repo rename cannot move the images.
+  _REGISTRY_DIR: llm-agent
   _PLATFORM: managed
   _SERVICE_NAME: jambonz-agent-staging
   _DEPLOY_REGION: $LOCATION

@@ -36,9 +36,9 @@ ${LOCATION}-docker.pkg.dev/${PROJECT_ID}/containers/${REPO_NAME}/<image>:{$SHA, 
 ```
 
 Defaults from the env templates: `LOCATION=europe-west1`,
-`PROJECT_ID=llm-voice`, `REPO_NAME=llm-agent` — note `REPO_NAME` here matches the
-Cloud Build built-in `$REPO_NAME` (the source-repo name), which is what the
-cloudbuild image paths actually use.
+`PROJECT_ID=llm-voice`, `REPO_NAME=llm-agent`. `REPO_NAME` here must match
+`_REGISTRY_DIR` in the cloudbuild files, which is the folder the builds push to.
+It is a fixed value, not the name of the source repo.
 
 ## Building images (Cloud Build)
 

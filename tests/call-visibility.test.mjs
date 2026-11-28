@@ -270,7 +270,7 @@ describe('who sees calls', () => {
     });
 
     test('GET /calls/{id}/recording', async () => {
-      // Without recording storage a visible call gets 503, and a call out of sight 404.
+      // The test store holds no such object: a visible call gets 500, and a call out of sight 404.
       const alice = await get('alice', `/calls/${calls.toAlice.id}/recording`);
       expect(alice.status).not.toBe(404);
       expect((await get('owner', `/calls/${calls.toAlice.id}/recording`)).status).toBe(alice.status);

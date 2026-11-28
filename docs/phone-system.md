@@ -9,6 +9,7 @@ This page describes the part of the API that lets desk phones register to the pl
 - **Lines.** The keys of a desk phone, worked out by the platform. Each line has its own SIP account.
 - **Number routing.** A number can ring an extension in place of an agent.
 - **Internal routes for call control.** A separate service decides what each call does by asking this API. For a call that belongs to an agent, the answer names the agent.
+- **Emergency address records.** The state of the address the carrier holds for each number, kept for the service that sends it. See [emergency-records.md](emergency-records.md).
 
 Not here yet: the service that carries the calls, phone provisioning, hunt groups, queues, agents inside phone system calls, and charging.
 
@@ -30,6 +31,8 @@ The phone system needs the schema 72 and 73 database upgrades (`tools/agent-admi
 The organisation's outbound policy also needs the schema 77 upgrade and then a restart of the API server. Until both are done, the outside calls of an organisation with the phone system are refused on the platform's own trunks with `outbound_policy_not_ready`, its agents' calls as well as its phones'. The policy, its limits and the brand's ceiling are in [outbound call authorisation](outbound-call-authorisation.md#the-organisations-outbound-policy).
 
 Billing for the phone system needs the schema 79 upgrade and then a restart of the API server. Until both are done nothing is charged, phone system calls write no usage, and an empty balance stops nothing. Charging starts on the day the upgrade ran, and no earlier day is charged. Each platform trunk that phone system calls leave by must be flagged `chargeable`; `yarn doctor` lists those that are not. The rate card's `extension` line and the trunk flags go in before the upgrade: the order is in [billing](billing-calls-from-usage.md#the-phone-system).
+
+Emergency address records need the schema 81 upgrade and then a restart of the API server. Until both are done the `/emergency-records` routes answer 503 `emergency_records_not_ready`. See [emergency-records.md](emergency-records.md).
 
 `GET /me` returns `organisation.capabilities`, so a front end can decide which pages to show without another request.
 
@@ -153,6 +156,7 @@ These are under `/api/agent-db/pbx`. They take `x-callctl-token` only. The worke
 | `POST /agent-db/pbx/calls` | Record a call, or an answered leg of one (`parentId`). The caller chooses the id, so a write sent twice is one row |
 | `POST /agent-db/pbx/calls/{callId}/events` | Things that happened on a call and are not rows of their own, such as a phone that rang and was not answered. An outside leg that was not answered or not dialled gives back its place in the organisation's calls in progress ([outbound call authorisation](outbound-call-authorisation.md#the-organisations-outbound-policy)) |
 | `POST /agent-db/pbx/calls/{callId}/end` | The call or leg has ended. It writes the call's usage. The call's own end may carry `recordedMs`, and any end `transcribedMs` ([billing](billing-calls-from-usage.md#the-phone-system)) |
+| `PUT /agent-db/pbx/calls/{callId}/recording` | The call's recording is finished and in the recording store. See [the recording of a call](#the-recording-of-a-call) |
 | `POST /agent-db/pbx/resync/claim` | Which desk phones should be told to fetch their settings? The request may be held open. See [phone provisioning](phone-provisioning.md#telling-a-phone-that-its-settings-changed) |
 
 `resolve` always answers 200 with a plan for a request it could decide. `action` is one of:
@@ -161,15 +165,31 @@ These are under `/api/agent-db/pbx`. They take `x-callctl-token` only. The worke
 |---|---|
 | `ring` | Ring the legs of `ring.steps`, in order. A leg names a line of a phone (`lineId`, `lineNumber`, `key`, the SIP `endpoint`, and what to `display`) or an outside number. When the last step ends unanswered, do what `noAnswer` says |
 | `outside` | A call from a line to an outside number. `outside.presentNumber` is the number to show |
-| `emergency` | A 999 or 112 call. Always answered, whatever the organisation's switches |
+| `emergency` | A 999 or 112 call. Always answered, whatever the organisation's switches and whatever the state of the number's [emergency address record](emergency-records.md). `emergency.presentNumber` is the number to show and `emergency.addressState` is the state of its record |
 | `connection` | Send the digits to the organisation's own phone system |
 | `agent` | Hand the call to an agent. `agent` names it: `instanceId`, `agentId` and `runtime`. Today only for a call that goes straight to an agent (see below). An agent as an extension, or as a destination of one, is a later release |
 | `forward` | Later releases |
-| `refuse` | The call cannot be routed. `reason` says why, for example `number_not_routed`, `phone_system_disabled`, or `charge_unpaid` (a monthly charge unpaid for 30 days; emergency calls still go out) |
+| `refuse` | The call cannot be routed. `reason` says why, for example `number_not_routed`, `phone_system_disabled`, `charge_unpaid` (a monthly charge unpaid for 30 days; emergency calls still go out), or `organisation_deactivated` (see below) |
 
 The plan applies what the directory knows: members, phones, lines, do-not-ring rules, and that an outside number rings only for its own person's own extension. It does not know whether a phone is busy or connected. Call control filters the legs by that.
 
+Every plan for digits dialled on a line has a `from` block: the line, its phone, the extension it calls as, and `from.presentNumber`, the number that line shows on a call out. It is there for an internal call too, so call control can keep it for an emergency call it has to place with no plan. It is null when the line has no number to show.
+
+A call out that would show a number whose emergency address record was rejected is refused by the outbound authorisation with `emergency_record_rejected`, not by the plan. An emergency plan is never refused for it.
+
 A phone never rings for a call it places. When a line dials an extension that its own phone rings for, such as a team its user belongs to, the plan leaves that phone out and lists it in `skipped` with the reason `caller_phone`. The user's other phones still ring.
+
+A refusal of digits dialled on a known line has the same `caller` and `from` as any other plan for that line, with `from.presentNumber`, the number the line shows on a call out. That holds for `organisation_deactivated`, `phone_system_disabled` and `charge_unpaid` as well as for `invalid_number` and `no_caller_id`. Call control keeps the number from every plan, so an emergency call it must place with no plan still shows it.
+
+### A deactivated organisation
+
+When an organisation is deactivated (`DELETE /organisations/{id}`, or `status` set to `deactivated`), its phones take no calls. `resolve` refuses with `organisation_deactivated` every call the phone system would carry for it: calls out, calls between extensions, calls in to the numbers of its extensions, and the follow-ups about a call in progress. 999 and 112 still go out. A call to a number an agent listens on is not a phone system call, and is answered as before. `rings-now` shows that calls are not put through.
+
+A call from one of its registrations to an agent (`registration`) is refused too, with `organisation_deactivated` and no `organisationId`.
+
+Only `deactivated` does this. A `suspended` or `provisional` organisation's phones work as before.
+
+The lines stay registered and the phones still fetch their settings, so an emergency call can still be made. Call control answers a refused call with SIP 480, as it does for `charge_unpaid`. It records the call, at no charge.
 
 ### A call that belongs to an agent
 
@@ -202,6 +222,23 @@ The four refusals below carry no `organisationId`. Call control records a refuse
 | `registration_not_routed` | No agent listens on the registration, or on the number called on it |
 
 A phone system call is one `calls` row with no agent, model name `telephony:pbx-call` and platform `pbx`. Every call and answered leg writes usage when it ends: a leg out to an outside number is charged, and the rest is written at nothing. Each extension but a `connection` has a monthly charge. See [billing](billing-calls-from-usage.md#the-phone-system).
+
+### The recording of a call
+
+Call control records a call with no agent, and its finishing command encodes, encrypts and uploads the file in the format of [`lib/recording/CONTRACT.md`](../lib/recording/CONTRACT.md). It then sends `PUT /agent-db/pbx/calls/{callId}/recording` with `{ organisationId, recordingId, encryptionKey }`. `recordingId` is the object's name in the recording store and must contain the call id. `encryptionKey` is the object's 32 byte key in base64. From then on `GET /calls/{callId}/recording` plays the file to whoever [sees the call](#who-sees-calls) and may download recordings.
+
+The sender deletes its file on any 4xx answer and keeps it on a 5xx or no answer. So the route checks and stores in one statement, and answers like this:
+
+| Answer | When | Stored |
+|---|---|---|
+| 200 `{ callId, recordingId }` | The call had no recording. Also when it holds this same name already, so a request sent twice is safe | Yes |
+| 409 `{ error, code: "recording_exists", recordingId }` | The call holds another file. `recordingId` is the name it holds | No |
+| 404 `not_found` | No such call, another organisation's call, a leg, an agent's call, or a call that was deleted | No |
+| 400 `bad_request` | The body or the call id is not as above | No |
+| 403 | The token check, before the route | No |
+| 5xx | The write failed, or its result is not known | Not known |
+
+A call takes one recording. Only the call itself takes it, never a leg. The route does not check that the name is under this server's `RECORDING_STORAGE_PATH`: the finishing command must write to the same store.
 
 ## Who sees calls
 
