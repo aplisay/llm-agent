@@ -44,10 +44,10 @@ steps:
       - TAG_NAME=$TAG_NAME
       - '-t'
       - >-
-        $_AR_HOSTNAME/$PROJECT_ID/containers/$REPO_NAME/$_SERVICE_NAME:$COMMIT_SHA
+        $_AR_HOSTNAME/$PROJECT_ID/containers/$_REGISTRY_DIR/$_SERVICE_NAME:$COMMIT_SHA
       - '-t'
       - >-
-        $_AR_HOSTNAME/$PROJECT_ID/containers/$REPO_NAME/$_SERVICE_NAME:feature
+        $_AR_HOSTNAME/$PROJECT_ID/containers/$_REGISTRY_DIR/$_SERVICE_NAME:feature
       - .
       - '-f'
       - Dockerfile
@@ -66,18 +66,18 @@ steps:
         SAFE_TAG=$(echo "$BRANCH_NAME" | tr '/' '-') && \
         echo "Tagging image with branch name: $$SAFE_TAG" && \
         docker tag \
-          $_AR_HOSTNAME/$PROJECT_ID/containers/$REPO_NAME/$_SERVICE_NAME:$COMMIT_SHA \
-          $_AR_HOSTNAME/$PROJECT_ID/containers/$REPO_NAME/$_SERVICE_NAME:$$SAFE_TAG
+          $_AR_HOSTNAME/$PROJECT_ID/containers/$_REGISTRY_DIR/$_SERVICE_NAME:$COMMIT_SHA \
+          $_AR_HOSTNAME/$PROJECT_ID/containers/$_REGISTRY_DIR/$_SERVICE_NAME:$$SAFE_TAG
   - name: gcr.io/cloud-builders/docker
     args:
       - push
       - '--all-tags'
       - >-
-        $_AR_HOSTNAME/$PROJECT_ID/containers/$REPO_NAME/$_SERVICE_NAME
+        $_AR_HOSTNAME/$PROJECT_ID/containers/$_REGISTRY_DIR/$_SERVICE_NAME
     id: Push
 images:
   - >-
-    $_AR_HOSTNAME/$PROJECT_ID/containers/$REPO_NAME/$_SERVICE_NAME:$COMMIT_SHA
+    $_AR_HOSTNAME/$PROJECT_ID/containers/$_REGISTRY_DIR/$_SERVICE_NAME:$COMMIT_SHA
 options:
   substitutionOption: ALLOW_LOOSE
   automapSubstitutions: true
@@ -88,5 +88,6 @@ availableSecrets:
       env: SECRETENV_BUNDLE
     - versionName: projects/$PROJECT_ID/secrets/SECRETENV_DEV_KEY/versions/latest
       env: SECRETENV_KEY
-
-
+substitutions:
+  # Fixed on purpose: not taken from the repo name, so a repo rename cannot move the images.
+  _REGISTRY_DIR: llm-agent
