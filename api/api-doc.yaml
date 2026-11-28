@@ -2255,6 +2255,20 @@ components:
           type: boolean
           description: Whether this log entry is the final form for this row, if false, then the row may change in future (e.g. to add further transcriptions)
           example: true
+        speaker:
+          type: string
+          format: uuid
+          nullable: true
+          description: >
+            On a phone system call with no agent: the id of the call row that spoke. It is the call's own id
+            for the caller, or the id of the answered leg for the party that answered (see `GET /calls/{callId}/linked`).
+            Every such row has the type `user`, and `createdAt` is when the words began. Null on every other row.
+            Rows with a `speaker` are returned only to a caller with `recording:download`.
+        sourceId:
+          type: string
+          format: uuid
+          nullable: true
+          description: The writer's own id for the text, on rows that have a `speaker`. Null on every other row.
     CallEvent:
       type: object
       description: |-
@@ -3734,7 +3748,7 @@ components:
         forwardTo: { type: string, nullable: true }
         params:
           type: object
-          description: 'Settings: `ringSeconds` (5 to 90, default 30), `callWaiting` (default true), `record` (default false).'
+          description: 'Settings: `ringSeconds` (5 to 90, default 30), `callWaiting` (default true), `record` (default false), `transcribe` (default false: a transcript of each recorded call, only while `record` is true; switching it on answers 503 `phone_system_not_ready` until the database has the transcript upgrade).'
         outboundNumber: { type: string, nullable: true }
         shownNumber: { type: string, nullable: true, description: "The number calls out from this extension show." }
         shownNumberSource: { type: string, nullable: true, enum: [outbound, only, main] }

@@ -15,6 +15,7 @@ import {
   pbxRelease, releasedExtensionTypes, releasedDestinationKinds, releasedPhoneKinds,
 } from '../lib/pbx/release.js';
 import { hasCapability, validateCapabilities } from '../lib/capabilities.js';
+import { stepOff } from '../lib/schema-guards.js';
 
 // November, so London is on UTC. 2026-11-11 is a Wednesday.
 const WED_1930 = new Date('2026-11-11T19:30:00Z');
@@ -197,6 +198,11 @@ describe('ring_all', () => {
     ext(s, 'x-200').params = { record: true, noAnswer: { kind: 'extension', extensionId: 'x-210' } };
     const result = plan(s, toExtension('x-200'));
     expect(result.recording).toEqual({ record: true });
+    // A transcript is asked for only with a recording.
+    ext(s, 'x-200').params = { record: true, transcribe: true };
+    expect(plan(s, toExtension('x-200')).recording).toEqual({ record: true, transcribe: {} });
+    ext(s, 'x-200').params = { transcribe: true };
+    expect(plan(s, toExtension('x-200')).recording).toEqual({ record: false });
     expect(result.noAnswer).toEqual({ kind: 'extension', extensionId: 'x-210', number: '210' });
   });
 
@@ -831,9 +837,10 @@ describe('extension params', () => {
     for (const value of [4, 91, 300, 30.5, '30']) refusedAs(ok('ring_all', { ringSeconds: value }, '1'), 'invalid_params', 'params.ringSeconds');
   });
 
-  test('callWaiting and record are booleans', () => {
-    expect(ok('ring_all', { callWaiting: false, record: true }, '1')).toEqual({ ok: true, params: { callWaiting: false, record: true } });
+  test('callWaiting, record and transcribe are booleans', () => {
+    expect(ok('ring_all', { callWaiting: false, record: true, transcribe: true }, '1')).toEqual({ ok: true, params: { callWaiting: false, record: true, transcribe: true } });
     refusedAs(ok('ring_all', { record: 'yes' }, '1'), 'invalid_params', 'params.record');
+    refusedAs(ok('ring_all', { transcribe: 1 }, '1'), 'invalid_params', 'params.transcribe');
   });
 
   test('an unknown key is refused', () => {
@@ -875,6 +882,7 @@ describe('extension params', () => {
       ringSeconds: 30,
       callWaiting: true,
       record: false,
+      transcribe: false,
       stepSeconds: 20,
       order: 'fixed',
       openingHours: null,
@@ -1001,5 +1009,16 @@ describe('a refusal of digits dialled on a line', () => {
     expect(dial(refusing('organisation_deactivated'), '101', 'ln-nowhere')).not.toHaveProperty('from');
     expect(plan(refusing('organisation_deactivated'), toExtension('x-100'))).not.toHaveProperty('from');
     expect(plan(refusing('charge_unpaid'), { kind: 'line', lineNumber: 1, callerId: CALLER })).not.toHaveProperty('from');
+  });
+});
+
+// Last: switching a schema step off cannot be undone in this process.
+describe('before the schema 82 upgrade', () => {
+  test('a plan does not ask for a transcript, whatever the setting says', () => {
+    const s = baseSnapshot();
+    ext(s, 'x-200').params = { record: true, transcribe: true };
+    expect(plan(s, toExtension('x-200')).recording).toEqual({ record: true, transcribe: {} });
+    stepOff('transcriptSpeaker');
+    expect(plan(s, toExtension('x-200')).recording).toEqual({ record: true });
   });
 });

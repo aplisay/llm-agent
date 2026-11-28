@@ -13,12 +13,18 @@ function upgradedRows() {
 }
 
 describe('guarded schema steps', () => {
-  test('registrar HA1, the phone system, brands, phone provisioning, the outbound policy, call redaction, the extension charge, phone resync and emergency records, in version order', () => {
+  test('registrar HA1, the phone system, brands, phone provisioning, the outbound policy, call redaction, the extension charge, phone resync, emergency records and transcript speakers, in version order', () => {
     expect(Object.entries(GUARDED_STEPS).map(([name, step]) => [name, step.version]))
-      .toEqual([['registrarHA1', 72], ['phoneSystem', 73], ['brands', 74], ['phoneProvisioning', 76], ['outboundPolicy', 77], ['callRedaction', 78], ['extensionCharge', 79], ['phoneResync', 80], ['emergencyRecords', 81]]);
+      .toEqual([['registrarHA1', 72], ['phoneSystem', 73], ['brands', 74], ['phoneProvisioning', 76], ['outboundPolicy', 77], ['callRedaction', 78], ['extensionCharge', 79], ['phoneResync', 80], ['emergencyRecords', 81], ['transcriptSpeaker', 82]]);
   });
 
-  test('a database one step behind lacks only the emergency records step', () => {
+  test('a schema 81 database lacks only the transcript speaker step', () => {
+    const rows = upgradedRows().filter((row) => row.table_name !== 'transaction_logs');
+    for (const step of Object.keys(GUARDED_STEPS).filter((name) => name !== 'transcriptSpeaker')) expect(missingParts(step, rows)).toEqual([]);
+    expect(missingParts('transcriptSpeaker', rows)).toEqual(['transaction_logs.speaker', 'transaction_logs.source_id']);
+  });
+
+  test('a database without the emergency records columns lacks only that step', () => {
     const added = GUARDED_STEPS.emergencyRecords.columns.phone_numbers;
     const rows = upgradedRows().filter((row) => !(row.table_name === 'phone_numbers' && added.includes(row.column_name)));
     for (const step of Object.keys(GUARDED_STEPS).filter((name) => name !== 'emergencyRecords')) expect(missingParts(step, rows)).toEqual([]);

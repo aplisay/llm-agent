@@ -34,6 +34,8 @@ Billing for the phone system needs the schema 79 upgrade and then a restart of t
 
 Emergency address records need the schema 81 upgrade and then a restart of the API server. Until both are done the `/emergency-records` and `/emergency-addresses` routes answer 503 `emergency_records_not_ready`. See [emergency-records.md](emergency-records.md).
 
+The transcript of a call with no agent needs the schema 82 upgrade and then a restart of the API server. Until both are done `POST /agent-db/pbx/calls/{callId}/transcript` answers 503 `phone_system_not_ready` and stores nothing. Until then an extension's `params.transcribe` cannot be switched on either: a write that sets it to true answers 503 `phone_system_not_ready`, and no plan asks for a transcript.
+
 `GET /me` returns `organisation.capabilities`, so a front end can decide which pages to show without another request.
 
 ### Brands
@@ -157,6 +159,7 @@ These are under `/api/agent-db/pbx`. They take `x-callctl-token` only. The worke
 | `POST /agent-db/pbx/calls/{callId}/events` | Things that happened on a call and are not rows of their own, such as a phone that rang and was not answered. An outside leg that was not answered or not dialled gives back its place in the organisation's calls in progress ([outbound call authorisation](outbound-call-authorisation.md#the-organisations-outbound-policy)) |
 | `POST /agent-db/pbx/calls/{callId}/end` | The call or leg has ended. It writes the call's usage. Any end may carry `transcribedMs`. A second end of the call itself, sent once its recording is stored, carries `recordedMs` ([billing](billing-calls-from-usage.md#the-phone-system)) |
 | `PUT /agent-db/pbx/calls/{callId}/recording` | The call's recording is finished and in the recording store. See [the recording of a call](#the-recording-of-a-call) |
+| `POST /agent-db/pbx/calls/{callId}/transcript` | What the parties of a call said. See [the transcript of a call](#the-transcript-of-a-call) |
 | `GET /agent-db/pbx/lines` | Every desk phone line with the number it shows. See [the list of lines](#the-list-of-lines) |
 | `POST /agent-db/pbx/resync/claim` | Which desk phones should be told to fetch their settings? The request may be held open. See [phone provisioning](phone-provisioning.md#telling-a-phone-that-its-settings-changed) |
 
@@ -280,6 +283,39 @@ A call takes one recording. Only the call itself takes it, never a leg. The rout
 
 After a 200, call control sends the length of the stored file as `recordedMs` on a second end of the call, with no `endedAt`. That writes the recording's usage row. A recording that is not stored sends no length and is not charged ([billing](billing-calls-from-usage.md#the-phone-system)).
 
+### The transcript of a call
+
+An extension with `params.record` and `params.transcribe` both true asks for a transcript: the plan's `recording` block is then `{ "record": true, "transcribe": {} }`. With `record` false there is no `transcribe`, whatever the setting says. The same holds on a database without the schema 82 upgrade. Call control uses its own default language.
+
+Call control transcribes each party of the call apart, and sends each final text with `POST /agent-db/pbx/calls/{callId}/transcript`:
+
+```json
+{ "texts": [
+  { "id": "<uuid>", "leg": "<uuid>", "text": "hello there", "at": "2026-11-27T10:15:02.200Z" }
+] }
+```
+
+- `id` is chosen by the caller. A text whose id is already stored on the call is skipped, so a request sent twice, or twice at once, stores each text once.
+- `leg` is the row that spoke: the call's own id for the caller, or the id of an answered leg of this call.
+- `text` is 1 to 4000 characters. `at` is when the words began. Absent means the time the text arrived.
+- At most 200 texts in one request. `party`, `startMs` and `endMs` may be sent and are not stored.
+
+One bad text refuses the whole request, and nothing of it is stored.
+
+| Answer | When |
+|---|---|
+| 200 `{ stored, duplicates }` | The texts are stored. A call that has ended still takes texts |
+| 400 `bad_request` | The list is empty or too long, or a text has a bad `id`, `leg`, `text` or `at` |
+| 404 `not_found` | No such phone system call, a leg (only the call itself takes a transcript), a call that was erased, or a `leg` that is not this call or one of its legs |
+| 403 | The token check, before the route |
+| 503 `phone_system_not_ready` | The database has not had the schema 82 upgrade |
+
+Each text is a row of the call's transaction log: `type` is `user`, `data` is the text, `isFinal` is true, `createdAt` is `at`, `speaker` is `leg` and `sourceId` is `id`. The rows are on the call, never on a leg, so `GET /calls/{callId}/logs` gives the whole call in the order the words began. To name a speaker, read the call row that `speaker` points at: the call itself is the caller, and a leg from `GET /calls/{callId}/linked` is the party that answered. The transcript shows to whoever [sees the call](#who-sees-calls) and has the right `recording:download`, which is what the call's recording needs. A caller who sees the call without that right still gets the call and its legs, and `GET /calls/{callId}/logs` answers 200 with the rows that have no `speaker`: the texts are left out. The `support` role is one such caller. The transcript of an agent's call is not changed by this: its rows have no `speaker` and need `call:read` only.
+
+Erasing a call (`DELETE /calls/{callId}`) deletes its transcript with it, and the route then answers 404 for that call. An erasure and a write take the same lock on the call, so a text that arrives during an erasure does not stay.
+
+The seconds transcribed are charged from `transcribedMs` on the end of the call or leg ([billing](billing-calls-from-usage.md#the-phone-system)), not from this route.
+
 ### A call's events
 
 `GET /calls/{callId}/events` gives what happened on a call, oldest first, as `{ events: [{ id, type, at, data }] }`. Call control sends the events (`POST /agent-db/pbx/calls/{callId}/events`), on the call's own id. Its `RECORDS.md` lists the types and their meaning. They include each phone or number that rang (`leg_rang`), which one answered (`leg_answered`), each that rang and did not take the call and why (`leg_not_answered`), a leg the plan left out and why (`leg_skipped`), a refusal (`refused`), hold, and the recording.
@@ -303,7 +339,7 @@ A phone system call involves a person when:
 - it was placed from one of the person's phones, or from a line of an extension the person owns;
 - its answered leg rang for the person. On a shared extension, such as a team's, only the member who answered sees the call, from the moment the leg answers. A mobile that waits for its key counts once the key comes. A call to a shared extension that nobody answered shows only to those who see every call.
 
-A login with no linked person sees no phone system calls. A leg row shows when its call does. A recording or a transcript shows to whoever sees its call: otherwise the recording route answers 404, and the transcript and invocation log routes answer an empty list. `POST /agents/{id}/invoke` with a `callId` answers 404 for a call its caller cannot see, as for a call that does not exist.
+A login with no linked person sees no phone system calls. A leg row shows when its call does. A recording or a transcript shows to whoever sees its call and has `recording:download`: for a call that is not seen the recording route answers 404, and the transcript and invocation log routes answer an empty list. `POST /agents/{id}/invoke` with a `callId` answers 404 for a call its caller cannot see, as for a call that does not exist.
 
 ### What a call read shows
 
