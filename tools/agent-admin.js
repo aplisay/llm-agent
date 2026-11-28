@@ -174,18 +174,21 @@ async function main() {
         authKeys.forEach(({ key, User: user }) => console.log(`${user && user.name} ${user.email}, key: "${key}"`));
         break;
 
-      case 'delete-user': {
-        if (!options.userId === !options.email) {
+      case 'delete-user':
+        where = {
+          userId: options.userId,
+          email: options.email && { [Op.like]: options.email }
+        };
+        if (Object.keys(where).length !== 1) {
           throw new Error(`${command} Must have either an email or userId`);
+          exit(1);
         }
-        const userWhere = options.userId ? { id: options.userId } : { email: { [Op.like]: options.email } };
-        if (!(user = await User.findOne({ where: userWhere }))) {
+        if (!(user = await User.findOne({ where: { email: { [Op.like]: options.email } } }))) {
           throw new Error(`Can't find user: ${options.userId || options.email}`);
         }
         await user.destroy();
         logger.info({ user }, 'deleted User');
         break;
-      }
 
       case 'delete-org':
         if (!options.orgName) {

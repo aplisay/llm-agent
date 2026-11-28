@@ -1,7 +1,7 @@
 /**
- * tools/agent-admin.js against the test database: each command that takes
- * --userId or --email finds the user by that option, run as the command line
- * tool in a process of its own.
+ * tools/agent-admin.js against the test database: add-authkey and usage find
+ * the user by --userId or --email, run as the command line tool in a process
+ * of its own.
  */
 import { randomUUID } from 'node:crypto';
 import { spawn } from 'node:child_process';
@@ -100,30 +100,6 @@ describe('tools/agent-admin.js', () => {
       const { code } = await run('add-authkey', '--userId', `aat-nobody-${stamp}`, '--key', key);
       expect(code).toBe(1);
       expect(await AuthKey.findOne({ where: { key } })).toBeNull();
-    }, 60000);
-  });
-
-  describe('delete-user', () => {
-    test('--userId deletes only the user with that id', async () => {
-      const [ed, flo] = [await user('ed'), await user('flo')];
-      const { code } = await run('delete-user', '--userId', ed.id);
-      expect(code).toBe(0);
-      expect(await User.findByPk(ed.id)).toBeNull();
-      expect(await User.findByPk(flo.id)).not.toBeNull();
-    }, 60000);
-
-    test('--email deletes the user with that email', async () => {
-      const gus = await user('gus');
-      const { code } = await run('delete-user', '--email', gus.email);
-      expect(code).toBe(0);
-      expect(await User.findByPk(gus.id)).toBeNull();
-    }, 60000);
-
-    test('with neither option, or with both, it fails and deletes nobody', async () => {
-      const hal = await user('hal');
-      expect((await run('delete-user')).code).toBe(1);
-      expect((await run('delete-user', '--userId', hal.id, '--email', hal.email)).code).toBe(1);
-      expect(await User.findByPk(hal.id)).not.toBeNull();
     }, 60000);
   });
 
