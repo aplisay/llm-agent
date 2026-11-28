@@ -21,7 +21,8 @@ export default function (logger) {
     description: 'Needs `phone:provision`. The answer holds the address the phone fetches its settings from, and it can '
       + 'not be read again. An earlier address of the phone stops working at once. The phone must present its factory '
       + 'certificate when it fetches: the address alone opens nothing. Until its first use the address stops working at '
-      + '`expiresAt`: 7 days, or 30 when a redirect service was told the address. A wiped phone is brought back by this.',
+      + '`expiresAt`: 7 days, or 30 when a redirect service was told the address. A wiped phone is brought back by this. '
+      + 'A phone whose model is not supported is refused: 409, code `model_not_supported`.',
     operationId: 'provisionPhone',
     tags: [PHONES_TAG],
     parameters: [pathId('phoneId', 'The id of the phone.'), organisationIdQuery],
