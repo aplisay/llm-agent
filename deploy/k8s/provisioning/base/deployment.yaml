@@ -72,11 +72,11 @@ spec:
             failureThreshold: 2
           # Fails when /health does not answer, or when the certificate the
           # service presents is not the one on disk for three checks running.
-          # A build that loads a renewed certificate by itself does so within
-          # a minute, so this never restarts it. A build that does not is
-          # restarted here, which loads it. Do not swap this for a plain
-          # httpGet probe while a build without the reload can still run: it
-          # would serve its old certificate until that expires.
+          # A build that loads a renewed certificate by itself fails two
+          # checks at most, so a renewal does not restart it. A build that
+          # does not is restarted here, which loads it. Do not swap this for a
+          # plain httpGet probe while a build without the reload can still
+          # run: it would serve its old certificate until that expires.
           livenessProbe:
             exec:
               command:

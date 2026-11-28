@@ -111,13 +111,21 @@ new one to the Secret the pod mounts.
 - The service reads its certificate files again once a minute and loads a
   renewed certificate by itself. Nothing restarts.
 - The liveness probe checks that the certificate the service presents is
-  the one on disk. With such a build it finds them the same, apart from at
-  most one check in the minute after a renewal. It restarts the container
-  only after three failed checks.
+  the one on disk. It restarts the container only after three failed
+  checks running. With such a build one check can fail after a renewal.
+  Two can fail when the files change between the service's reads of the
+  certificate and of the key: it then loads the pair a minute later.
 - A build from before the service could do this never loads the new
   certificate. There the probe fails three times and the kubelet restarts
   the container, which loads it. So the manifests are safe with either
   build.
+- A Secret that holds a certificate and a key that do not fit each other
+  stops the pod. The running process keeps the certificate it has. But the
+  probe fails while the certificate on disk is not the one presented, so
+  after three checks the container is restarted, and the service does not
+  start with such a pair. Nothing answers until the Secret is put right.
+  A renewal does not cause this: cert-manager writes the two together, and
+  the kubelet swaps the mounted files in one step.
 
 Do not replace the liveness probe with a plain HTTP probe while a build
 without the reload can still run: that build would serve its old
