@@ -154,6 +154,10 @@ organisation has. With `count` and `total` a page can say "1 of your 3 numbers"
 or "all your numbers". Each state that stops calls gives one reason. Today
 that is `rejected` only.
 
+When `count` equals `total`, no phone system call can go out to an outside
+number, apart from 999 and 112. `blocked` is still false then, because an
+agent's call does not say which number it shows, and still goes out.
+
 The answer is worked out with the same counts and spend as a call, and writes
 no decision. Each API server keeps an organisation's answer for 15 seconds, and
 forgets it when the policy is changed through that server. So a change made

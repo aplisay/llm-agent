@@ -4071,7 +4071,7 @@ components:
                 description: "For `emergency_record_rejected`, the numbers in that state, sorted, at most 20, as the phone number routes show them"
               count:
                 type: integer
-                description: For `emergency_record_rejected`, how many of the organisation's numbers are in that state
+                description: For `emergency_record_rejected`, how many of the organisation's numbers are in that state. Equal to `total` when no phone system call can go out, apart from 999 and 112
               total:
                 type: integer
                 description: For `emergency_record_rejected`, how many numbers the organisation has
