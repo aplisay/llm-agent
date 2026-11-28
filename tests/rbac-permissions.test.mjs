@@ -276,10 +276,14 @@ describe('permissions — intersectStatements (AuthKey: key never exceeds owner)
 });
 
 describe('permissions — keyRestrictionStatements (legacy-safe)', () => {
-  test('null / empty / legacy {admin,join} => no restriction', () => {
+  test('null / legacy {admin,join} => no restriction', () => {
     expect(keyRestrictionStatements(null)).toBeNull();
-    expect(keyRestrictionStatements({})).toBeNull();
     expect(keyRestrictionStatements({ admin: true, join: true })).toBeNull();
+  });
+  test('an empty map is a restriction to nothing', () => {
+    const restriction = keyRestrictionStatements({});
+    expect(restriction).toEqual({});
+    expect(intersectStatements(effectivePermissions({ role: 'owner' }, null), restriction)).toEqual({});
   });
   test('a named-role string resolves to its statements', () => {
     expect(keyRestrictionStatements('member')).toEqual(statementsFor('member'));

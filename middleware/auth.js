@@ -110,7 +110,7 @@ async function attachRbac(user) {
   user._effectivePermissions = bootstrap ? statementsFor('superAdmin') : effectivePermissions(user, user.Organisation);
   user._allowedModels = bootstrap ? null : effectiveAllowedModels(user, user.Organisation);
   // AuthKey principals: a key can never exceed its owner — intersect its effective
-  // perms with the key's roleRestriction (§4.6). null/empty/legacy => no change.
+  // perms with the key's roleRestriction (§4.6). null/legacy => no change; {} => none.
   if (keyRestriction) user._effectivePermissions = intersectStatements(user._effectivePermissions, keyRestriction);
   return user;
 }

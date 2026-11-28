@@ -78,6 +78,9 @@ describe('a restricted key of a bootstrap super-admin', () => {
     keys.bootInOrgFull = await newKey(ids.bootInOrg, null);
     keys.bootInOrgNarrow = await newKey(ids.bootInOrg, PHONE_AND_DIRECTORY);
     keys.superNarrow = await newKey(bySuperRole, PHONE_AND_DIRECTORY);
+    keys.bootEmpty = await newKey(ids.boot, {});
+    keys.superEmpty = await newKey(bySuperRole, {});
+    keys.superFull = await newKey(bySuperRole, null);
 
     const app = express();
     app.use(express.json());
@@ -139,6 +142,20 @@ describe('a restricted key of a bootstrap super-admin', () => {
   test('a key restricted to a named role has that role, within the super-admin role', async () => {
     expect((await as(keys.bootNamedRole)('/organisations')).status).toBe(403);
     expect((await me(keys.bootNamedRole)).permissions).toEqual({ directory: ['read', 'update', 'lookup', 'readAll'] });
+  });
+
+  test('an empty restriction gives a key no permissions, whoever owns it', async () => {
+    for (const key of [keys.bootEmpty, keys.superEmpty]) {
+      for (const path of ADMIN_ROUTES) expect([path, (await as(key)(path)).status]).toEqual([path, 403]);
+      const body = await me(key);
+      expect(body.permissions).toEqual({});
+      expect(body).toMatchObject({ isAdmin: false, isSuperAdmin: false });
+    }
+  });
+
+  test('a key with no restriction keeps its owner\'s whole role', async () => {
+    for (const path of ADMIN_ROUTES) expect([path, (await as(keys.superFull)(path)).status]).toEqual([path, 200]);
+    expect((await me(keys.superFull)).permissions).toEqual(statementsFor('superAdmin'));
   });
 
   test('a legacy restriction is still no restriction', async () => {
